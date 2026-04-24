@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package discovery
 
 import (
@@ -14,13 +30,25 @@ import (
 	"sigs.k8s.io/yaml"
 
 	corev1 "k8s.io/api/core/v1"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 type ConfigBuilder struct {
 	client client.Client
-	rbg    *workloadsv1alpha1.RoleBasedGroup
-	role   *workloadsv1alpha1.RoleSpec
+	rbg    *workloadsv1alpha2.RoleBasedGroup
+	role   *workloadsv1alpha2.RoleSpec
+}
+
+func NewConfigBuilder(
+	client client.Client,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
+) *ConfigBuilder {
+	return &ConfigBuilder{
+		client: client,
+		rbg:    rbg,
+		role:   role,
+	}
 }
 
 type ClusterConfig struct {
@@ -86,7 +114,7 @@ func (b *ConfigBuilder) buildRolesInfo() (RolesInfo, error) {
 	return roles, nil
 }
 
-func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha1.RoleSpec) ([]Instance, error) {
+func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha2.RoleSpec) ([]Instance, error) {
 	instances := make([]Instance, 0, *role.Replicas)
 	serviceName, err := utils.GetCompatibleHeadlessServiceName(context.TODO(), b.client, b.rbg, role)
 	if err != nil {
@@ -95,7 +123,7 @@ func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha1.RoleSpec) ([]Inst
 
 	for i := 0; i < int(*role.Replicas); i++ {
 		instance := Instance{
-			Address: fmt.Sprintf("%s-%d.%s", role.Name, i, serviceName),
+			Address: fmt.Sprintf("%s-%d.%s", b.rbg.GetWorkloadName(role), i, serviceName),
 			Ports:   make(map[string]int32),
 		}
 

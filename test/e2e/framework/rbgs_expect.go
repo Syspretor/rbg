@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package framework
 
 import (
@@ -9,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	"sigs.k8s.io/rbgs/test/utils"
 )
@@ -33,7 +50,7 @@ func (f *Framework) ExpectRbgSetEqual(rbgSet *v1alpha1.RoleBasedGroupSet) {
 
 			// List all child RoleBasedGroup instances associated with this RoleBasedGroupSet.
 			var rbglist v1alpha1.RoleBasedGroupList
-			selector, _ := labels.Parse(fmt.Sprintf("%s=%s", v1alpha1.SetRBGSetNameLabelKey, newRbgSet.Name))
+			selector, _ := labels.Parse(fmt.Sprintf("%s=%s", constants.GroupSetNameLabelKey, newRbgSet.Name))
 			err = f.Client.List(
 				f.Ctx, &rbglist, client.InNamespace(newRbgSet.Namespace),
 				client.MatchingLabelsSelector{Selector: selector},
@@ -107,7 +124,7 @@ func (f *Framework) ExpectRbgAnnotation(
 
 	gomega.Eventually(
 		func() bool {
-			selector, _ := labels.Parse(fmt.Sprintf("%s=%s", v1alpha1.SetRBGSetNameLabelKey, rbgSet.Name))
+			selector, _ := labels.Parse(fmt.Sprintf("%s=%s", constants.GroupSetNameLabelKey, rbgSet.Name))
 			err := f.Client.List(
 				f.Ctx, &rbglist, client.InNamespace(rbgSet.Namespace),
 				client.MatchingLabelsSelector{Selector: selector},

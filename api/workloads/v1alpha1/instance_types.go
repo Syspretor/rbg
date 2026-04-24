@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2025 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// InstanceSpec defines the desired state ofInstance
+// InstanceSpec defines the desired state of Instance
 type InstanceSpec struct {
 	// Components is a list of components, each of which specifies a component and the number of replicas and template for Instance that match the component.
 	Components []InstanceComponent `json:"components" patchStrategy:"merge" patchMergeKey:"name"`
@@ -31,7 +31,8 @@ type InstanceSpec struct {
 	PodGroupPolicy *PodGroupPolicy `json:"podGroupPolicy,omitempty"`
 
 	// InstanceReadyPolicy specifies the policy for determining if the Instance is ready.
-	// Defaults to `InstanceReadyOnAllPodReady`
+	// Defaults to `AllPodReady`
+	// +kubebuilder:default=AllPodReady
 	ReadyPolicy InstanceReadyPolicyType `json:"readyPolicy,omitempty"`
 
 	// RestartPolicy defines the restart policy for all pods within the Instance.
@@ -50,8 +51,8 @@ type InstanceReadinessGate struct {
 type InstanceReadyPolicyType string
 
 const (
-	// InstanceReadyPolicyTypeAll means all Pods in the Instance must be ready when Instance Ready
-	InstanceReadyPolicyTypeAll InstanceReadyPolicyType = "InstanceReadyOnAllPodReady"
+	// InstanceReadyOnAllPodReady means all Pods in the Instance must be ready when Instance Ready
+	InstanceReadyOnAllPodReady InstanceReadyPolicyType = "AllPodReady"
 
 	// InstanceReadyPolicyTypeNone means do nothing for Pods
 	InstanceReadyPolicyTypeNone InstanceReadyPolicyType = "None"
@@ -75,7 +76,7 @@ type InstanceComponent struct {
 	// Size is the number of replicas for Pods that match the PodRule.
 	Size *int32 `json:"size,omitempty"`
 
-	// serviceName is the name of the service that governs this Instance Component.
+	// ServiceName is the name of the service that governs this Instance Component.
 	// This service must exist before the Instance, and is responsible for
 	// the network identity of the set. Pods get DNS/hostnames that follow the
 	// pattern: pod-specific-string.serviceName.default.svc.cluster.local
@@ -88,7 +89,7 @@ type InstanceComponent struct {
 	Template corev1.PodTemplateSpec `json:"template"`
 }
 
-// InstanceStatus defines the observed state ofInstance
+// InstanceStatus defines the observed state of Instance
 type InstanceStatus struct {
 	// ObservedGeneration is the most recent generation observed for this Instance. It corresponds to the
 	// Instance's generation, which is updated on mutation by the API Server.
@@ -119,7 +120,7 @@ type ComponentStatus struct {
 	// Name is the type name of the component.
 	Name string `json:"name"`
 
-	// Size is the number of Pod for Instance that match the component.
+	// Replicas is the number of Pod for Instance that match the component.
 	Replicas int32 `json:"replicas"`
 
 	// ReadyReplicas is the number of ready Pod for Instance that match the component.
@@ -186,11 +187,11 @@ type InstanceCondition struct {
 // +k8s:openapi-gen=true
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=ins,path=Instances,scope=Namespaced
+// +kubebuilder:resource:shortName=ins,path=instances,scope=Namespaced
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='InstanceReady')].status",description="Overall readiness status"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp",description="CreationTimestamp is a timestamp representing the server time when this object was created. It is not guaranteed to be set in happens-before order across separate operations. Clients may not set this value. It is represented in RFC3339 form and is in UTC."
 
-// Instance is the Schema for the duplicatesets API
+// Instance is the Schema for the instances API
 type Instance struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -202,7 +203,7 @@ type Instance struct {
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:object:root=true
 
-// InstanceList contains a list ofInstance
+// InstanceList contains a list of Instance
 type InstanceList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`

@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2026 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,12 +29,13 @@ type WorkloadsV1alpha1Interface interface {
 	RESTClient() rest.Interface
 	ClusterEngineRuntimeProfilesGetter
 	InstancesGetter
+	InstanceSetsGetter
 	RoleBasedGroupsGetter
 	RoleBasedGroupScalingAdaptersGetter
 	RoleBasedGroupSetsGetter
 }
 
-// WorkloadsV1alpha1Client is used to interact with features provided by the workloads group.
+// WorkloadsV1alpha1Client is used to interact with features provided by the workloads.x-k8s.io group.
 type WorkloadsV1alpha1Client struct {
 	restClient rest.Interface
 }
@@ -45,6 +46,10 @@ func (c *WorkloadsV1alpha1Client) ClusterEngineRuntimeProfiles(namespace string)
 
 func (c *WorkloadsV1alpha1Client) Instances(namespace string) InstanceInterface {
 	return newInstances(c, namespace)
+}
+
+func (c *WorkloadsV1alpha1Client) InstanceSets(namespace string) InstanceSetInterface {
+	return newInstanceSets(c, namespace)
 }
 
 func (c *WorkloadsV1alpha1Client) RoleBasedGroups(namespace string) RoleBasedGroupInterface {

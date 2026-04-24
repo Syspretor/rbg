@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2025 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestValidateRolloutHistory(t *testing.T) {
@@ -81,7 +82,7 @@ func TestValidateRolloutHistory(t *testing.T) {
 }
 
 func TestRunRolloutHistory(t *testing.T) {
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
@@ -96,7 +97,7 @@ func TestRunRolloutHistory(t *testing.T) {
 				Namespace:         "default",
 				CreationTimestamp: metav1.Now(),
 				Labels: map[string]string{
-					workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+					constants.GroupNameLabelKey: "test-rbg",
 				},
 			},
 			Data:     runtime.RawExtension{Raw: []byte(fmt.Sprintf("{\"role\":{\"name\":\"role-%d\"}}", i))},
@@ -104,7 +105,7 @@ func TestRunRolloutHistory(t *testing.T) {
 		})
 	}
 	fakeClient := getFakeK8sClient(revisions)
-	fakeRgbClient := getFakeRgbClient([]*workloadsv1alpha1.RoleBasedGroup{rbg})
+	fakeRgbClient := getFakeRgbClient([]*workloadsv1alpha2.RoleBasedGroup{rbg})
 	old := rolloutOpts
 	defer func() {
 		rolloutOpts = old

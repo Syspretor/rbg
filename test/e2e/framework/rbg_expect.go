@@ -1,15 +1,34 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package framework
 
 import (
 	"fmt"
 
 	"github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	pkgutils "sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/e2e/framework/workloads"
 	"sigs.k8s.io/rbgs/test/utils"
@@ -40,7 +59,10 @@ func (f *Framework) ExpectRbgEqual(rbg *v1alpha1.RoleBasedGroup) {
 
 	// check controllerrevision
 	f.ExpectRBGRevisionEqual(rbg)
-	expect, err := pkgutils.NewRevision(f.Ctx, f.Client, rbg, nil)
+	// NewRevision requires v1alpha2 RBG (storage version); fetch the stored object.
+	rbgV2 := &workloadsv1alpha2.RoleBasedGroup{}
+	gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{Name: rbg.Name, Namespace: rbg.Namespace}, rbgV2)).Should(gomega.Succeed())
+	expect, err := pkgutils.NewRevision(f.Ctx, f.Client, rbgV2, nil)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
 	expectedRoleRevisionHash, err := pkgutils.GetRolesRevisionHash(expect)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred())
@@ -49,7 +71,7 @@ func (f *Framework) ExpectRbgEqual(rbg *v1alpha1.RoleBasedGroup) {
 	for _, role := range rbg.Spec.Roles {
 		wlCheck, err := workloads.NewWorkloadEqualChecker(f.Ctx, f.Client, role.Workload.String())
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
-		roleHashKey := fmt.Sprintf(v1alpha1.RoleRevisionLabelKeyFmt, role.Name)
+		roleHashKey := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)
 
 		gomega.Eventually(
 			func() bool {
@@ -94,6 +116,9 @@ func (f *Framework) ExpectRbgEqual(rbg *v1alpha1.RoleBasedGroup) {
 }
 
 func (f *Framework) ExpectRbgDeleted(rbg *v1alpha1.RoleBasedGroup) {
+	logger := log.FromContext(f.Ctx).WithValues("rbg", rbg.Name)
+
+	// Check RBG is deleted
 	newRbg := &v1alpha1.RoleBasedGroup{}
 	gomega.Eventually(
 		func() bool {
@@ -106,6 +131,27 @@ func (f *Framework) ExpectRbgDeleted(rbg *v1alpha1.RoleBasedGroup) {
 
 			return apierrors.IsNotFound(err)
 
+		}, utils.Timeout, utils.Interval,
+	).Should(gomega.BeTrue())
+
+	// Check all Pods managed by this RBG are deleted
+	gomega.Eventually(
+		func() bool {
+			podList := &corev1.PodList{}
+			err := f.Client.List(
+				f.Ctx, podList,
+				client.InNamespace(rbg.Namespace),
+				client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name},
+			)
+			if err != nil {
+				logger.Error(err, "failed to list pods")
+				return false
+			}
+			if len(podList.Items) > 0 {
+				logger.V(1).Info("waiting for pods to be deleted", "remainingPods", len(podList.Items))
+				return false
+			}
+			return true
 		}, utils.Timeout, utils.Interval,
 	).Should(gomega.BeTrue())
 }

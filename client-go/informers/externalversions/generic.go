@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2026 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import (
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	cache "k8s.io/client-go/tools/cache"
 	v1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	v1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 // GenericInformer is type of SharedIndexInformer which will locate and delegate to other
@@ -51,17 +52,35 @@ func (f *genericInformer) Lister() cache.GenericLister {
 // TODO extend this to unknown resources with a client pool
 func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource) (GenericInformer, error) {
 	switch resource {
-	// Group=workloads, Version=v1alpha1
+	// Group=workloads.x-k8s.io, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithResource("clusterengineruntimeprofiles"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().ClusterEngineRuntimeProfiles().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("instances"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().Instances().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("instancesets"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().InstanceSets().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("rolebasedgroups"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().RoleBasedGroups().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("rolebasedgroupscalingadapters"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().RoleBasedGroupScalingAdapters().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("rolebasedgroupsets"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha1().RoleBasedGroupSets().Informer()}, nil
+
+		// Group=workloads.x-k8s.io, Version=v1alpha2
+	case v1alpha2.SchemeGroupVersion.WithResource("clusterengineruntimeprofiles"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha2().ClusterEngineRuntimeProfiles().Informer()}, nil
+	case v1alpha2.SchemeGroupVersion.WithResource("coordinatedpolicies"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha2().CoordinatedPolicies().Informer()}, nil
+	case v1alpha2.SchemeGroupVersion.WithResource("rolebasedgroups"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha2().RoleBasedGroups().Informer()}, nil
+	case v1alpha2.SchemeGroupVersion.WithResource("rolebasedgroupscalingadapters"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha2().RoleBasedGroupScalingAdapters().Informer()}, nil
+	case v1alpha2.SchemeGroupVersion.WithResource("rolebasedgroupsets"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha2().RoleBasedGroupSets().Informer()}, nil
+	case v1alpha2.SchemeGroupVersion.WithResource("roleinstances"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha2().RoleInstances().Informer()}, nil
+	case v1alpha2.SchemeGroupVersion.WithResource("roleinstancesets"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Workloads().V1alpha2().RoleInstanceSets().Informer()}, nil
 
 	}
 

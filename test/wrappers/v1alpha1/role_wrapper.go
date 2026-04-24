@@ -1,0 +1,221 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
+	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/utils"
+	"sigs.k8s.io/rbgs/test/wrappers"
+)
+
+type RoleWrapper struct {
+	workloadsv1alpha.RoleSpec
+}
+
+func (roleWrapper *RoleWrapper) Obj() workloadsv1alpha.RoleSpec {
+	return roleWrapper.RoleSpec
+}
+
+func (roleWrapper *RoleWrapper) WithName(name string) *RoleWrapper {
+	roleWrapper.Name = name
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithReplicas(size int32) *RoleWrapper {
+	roleWrapper.Replicas = ptr.To(size)
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithMaxUnavailable(value int32) *RoleWrapper {
+	if roleWrapper.RolloutStrategy.RollingUpdate == nil {
+		roleWrapper.RolloutStrategy.RollingUpdate = &workloadsv1alpha.RollingUpdate{}
+	}
+	roleWrapper.RolloutStrategy.RollingUpdate.MaxUnavailable = ptr.To(intstr.FromInt32(value))
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithMaxSurge(value int32) *RoleWrapper {
+	if roleWrapper.RolloutStrategy.RollingUpdate == nil {
+		roleWrapper.RolloutStrategy.RollingUpdate = &workloadsv1alpha.RollingUpdate{}
+	}
+	roleWrapper.RolloutStrategy.RollingUpdate.MaxSurge = ptr.To(intstr.FromInt32(value))
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithTemplate(template corev1.PodTemplateSpec) *RoleWrapper {
+	roleWrapper.TemplateSource.Template = &template
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithDependencies(dependencies []string) *RoleWrapper {
+	roleWrapper.Dependencies = dependencies
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithRollingUpdate(rollingUpdate workloadsv1alpha.RollingUpdate) *RoleWrapper {
+	roleWrapper.RolloutStrategy = &workloadsv1alpha.RolloutStrategy{
+		Type:          workloadsv1alpha.RollingUpdateStrategyType,
+		RollingUpdate: &rollingUpdate,
+	}
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithRestartPolicy(restartPolicy workloadsv1alpha.RestartPolicyType) *RoleWrapper {
+	roleWrapper.RestartPolicy = restartPolicy
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithLabels(labels map[string]string) *RoleWrapper {
+	roleWrapper.Labels = labels
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithWorkload(workloadType string) *RoleWrapper {
+	switch workloadType {
+	case workloadsv1alpha.DeploymentWorkloadType:
+		roleWrapper.Workload = workloadsv1alpha.WorkloadSpec{
+			APIVersion: "apps/v1",
+			Kind:       "Deployment",
+		}
+	case workloadsv1alpha.StatefulSetWorkloadType:
+		roleWrapper.Workload = workloadsv1alpha.WorkloadSpec{
+			APIVersion: "apps/v1",
+			Kind:       "StatefulSet",
+		}
+	case workloadsv1alpha.LeaderWorkerSetWorkloadType:
+		roleWrapper.Workload = workloadsv1alpha.WorkloadSpec{
+			APIVersion: "leaderworkerset.x-k8s.io/v1",
+			Kind:       "LeaderWorkerSet",
+		}
+	case workloadsv1alpha.InstanceSetWorkloadType:
+		roleWrapper.Workload = workloadsv1alpha.WorkloadSpec{
+			APIVersion: "workloads.x-k8s.io/v1alpha1",
+			Kind:       "InstanceSet",
+		}
+	default:
+		panic(fmt.Sprintf("workload type not supported: %s", workloadType))
+	}
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithEngineRuntime(engineRuntimes []workloadsv1alpha.EngineRuntime) *RoleWrapper {
+	roleWrapper.EngineRuntimes = engineRuntimes
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithLeaderWorkerTemplate(leaderPatch, workerPatch *runtime.RawExtension) *RoleWrapper {
+	roleWrapper.LeaderWorkerSet = &workloadsv1alpha.LeaderWorkerTemplate{
+		PatchLeaderTemplate: leaderPatch,
+		PatchWorkerTemplate: workerPatch,
+	}
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithScalingAdapter(enable bool) *RoleWrapper {
+	roleWrapper.ScalingAdapter = &workloadsv1alpha.ScalingAdapter{
+		Enable: enable,
+	}
+	return roleWrapper
+}
+
+// WithTemplateRef sets the role to use a template reference by name.
+// This method automatically clears the Template field to satisfy mutual exclusivity requirements
+// (templateRef and template cannot both be set).
+func (roleWrapper *RoleWrapper) WithTemplateRef(name string) *RoleWrapper {
+	roleWrapper.TemplateSource.TemplateRef = &workloadsv1alpha.TemplateRef{
+		Name: name,
+	}
+	// Clear Template to satisfy mutual exclusivity (templateRef and template cannot both be set)
+	roleWrapper.TemplateSource.Template = nil
+	return roleWrapper
+}
+
+func (roleWrapper *RoleWrapper) WithTemplatePatch(patch runtime.RawExtension) *RoleWrapper {
+	roleWrapper.TemplatePatch = patch
+	return roleWrapper
+}
+
+func BuildBasicRole(name string) *RoleWrapper {
+	template := wrappers.BuildBasicPodTemplateSpec().Obj()
+	return &RoleWrapper{
+		workloadsv1alpha.RoleSpec{
+			Name:     name,
+			Replicas: ptr.To(int32(1)),
+			RolloutStrategy: &workloadsv1alpha.RolloutStrategy{
+				Type: workloadsv1alpha.RollingUpdateStrategyType,
+			},
+			Workload: workloadsv1alpha.WorkloadSpec{
+				APIVersion: "apps/v1",
+				Kind:       "StatefulSet",
+			},
+			TemplateSource: workloadsv1alpha.TemplateSource{
+				Template: &template,
+			},
+		},
+	}
+}
+
+func BuildLwsRole(name string) *RoleWrapper {
+	leaderPatch := BuildLWSTemplatePatch(map[string]string{"role": "leader"})
+	workerPatch := BuildLWSTemplatePatch(map[string]string{"role": "worker"})
+	template := wrappers.BuildBasicPodTemplateSpec().Obj()
+
+	return &RoleWrapper{
+		workloadsv1alpha.RoleSpec{
+			Name:     name,
+			Replicas: ptr.To(int32(1)),
+			RolloutStrategy: &workloadsv1alpha.RolloutStrategy{
+				Type: workloadsv1alpha.RollingUpdateStrategyType,
+			},
+			Workload: workloadsv1alpha.WorkloadSpec{
+				APIVersion: "leaderworkerset.x-k8s.io/v1",
+				Kind:       "LeaderWorkerSet",
+			},
+			TemplateSource: workloadsv1alpha.TemplateSource{
+				Template: &template,
+			},
+			LeaderWorkerSet: &workloadsv1alpha.LeaderWorkerTemplate{
+				Size:                ptr.To(int32(2)),
+				PatchLeaderTemplate: &leaderPatch,
+				PatchWorkerTemplate: &workerPatch,
+			},
+		},
+	}
+}
+
+func BuildLWSTemplatePatch(labels map[string]string) runtime.RawExtension {
+	type metadata struct {
+		Labels map[string]string `json:"labels"`
+	}
+	type labelsPatch struct {
+		MetaData metadata `json:"metadata"`
+	}
+
+	patchContent := labelsPatch{
+		MetaData: metadata{
+			Labels: labels,
+		},
+	}
+
+	return runtime.RawExtension{Raw: []byte(utils.DumpJSON(patchContent))}
+}

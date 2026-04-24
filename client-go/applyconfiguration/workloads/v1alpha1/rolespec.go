@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2026 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,25 +18,31 @@ limitations under the License.
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/client-go/applyconfigurations/core/v1"
+	v1 "k8s.io/api/core/v1"
+	runtime "k8s.io/apimachinery/pkg/runtime"
+	corev1 "k8s.io/client-go/applyconfigurations/core/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
 // RoleSpecApplyConfiguration represents a declarative configuration of the RoleSpec type for use
 // with apply.
 type RoleSpecApplyConfiguration struct {
-	Name            *string                                 `json:"name,omitempty"`
-	Replicas        *int32                                  `json:"replicas,omitempty"`
-	RolloutStrategy *RolloutStrategyApplyConfiguration      `json:"rolloutStrategy,omitempty"`
-	RestartPolicy   *workloadsv1alpha1.RestartPolicyType    `json:"restartPolicy,omitempty"`
-	Dependencies    []string                                `json:"dependencies,omitempty"`
-	Workload        *WorkloadSpecApplyConfiguration         `json:"workload,omitempty"`
-	Template        *v1.PodTemplateSpecApplyConfiguration   `json:"template,omitempty"`
-	LeaderWorkerSet *LeaderWorkerTemplateApplyConfiguration `json:"leaderWorkerSet,omitempty"`
-	ServicePorts    []corev1.ServicePort                    `json:"servicePorts,omitempty"`
-	EngineRuntimes  []EngineRuntimeApplyConfiguration       `json:"engineRuntimes,omitempty"`
-	ScalingAdapter  *ScalingAdapterApplyConfiguration       `json:"scalingAdapter,omitempty"`
+	Name                             *string                              `json:"name,omitempty"`
+	Labels                           map[string]string                    `json:"labels,omitempty"`
+	Annotations                      map[string]string                    `json:"annotations,omitempty"`
+	Replicas                         *int32                               `json:"replicas,omitempty"`
+	RolloutStrategy                  *RolloutStrategyApplyConfiguration   `json:"rolloutStrategy,omitempty"`
+	RestartPolicy                    *workloadsv1alpha1.RestartPolicyType `json:"restartPolicy,omitempty"`
+	Dependencies                     []string                             `json:"dependencies,omitempty"`
+	Workload                         *WorkloadSpecApplyConfiguration      `json:"workload,omitempty"`
+	TemplateSourceApplyConfiguration `json:",inline"`
+	TemplatePatch                    *runtime.RawExtension                   `json:"templatePatch,omitempty"`
+	LeaderWorkerSet                  *LeaderWorkerTemplateApplyConfiguration `json:"leaderWorkerSet,omitempty"`
+	Components                       []InstanceComponentApplyConfiguration   `json:"components,omitempty"`
+	ServicePorts                     []v1.ServicePort                        `json:"servicePorts,omitempty"`
+	EngineRuntimes                   []EngineRuntimeApplyConfiguration       `json:"engineRuntimes,omitempty"`
+	ScalingAdapter                   *ScalingAdapterApplyConfiguration       `json:"scalingAdapter,omitempty"`
+	MinReadySeconds                  *int32                                  `json:"minReadySeconds,omitempty"`
 }
 
 // RoleSpecApplyConfiguration constructs a declarative configuration of the RoleSpec type for use with
@@ -50,6 +56,34 @@ func RoleSpec() *RoleSpecApplyConfiguration {
 // If called multiple times, the Name field is set to the value of the last call.
 func (b *RoleSpecApplyConfiguration) WithName(value string) *RoleSpecApplyConfiguration {
 	b.Name = &value
+	return b
+}
+
+// WithLabels puts the entries into the Labels field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, the entries provided by each call will be put on the Labels field,
+// overwriting an existing map entries in Labels field with the same key.
+func (b *RoleSpecApplyConfiguration) WithLabels(entries map[string]string) *RoleSpecApplyConfiguration {
+	if b.Labels == nil && len(entries) > 0 {
+		b.Labels = make(map[string]string, len(entries))
+	}
+	for k, v := range entries {
+		b.Labels[k] = v
+	}
+	return b
+}
+
+// WithAnnotations puts the entries into the Annotations field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, the entries provided by each call will be put on the Annotations field,
+// overwriting an existing map entries in Annotations field with the same key.
+func (b *RoleSpecApplyConfiguration) WithAnnotations(entries map[string]string) *RoleSpecApplyConfiguration {
+	if b.Annotations == nil && len(entries) > 0 {
+		b.Annotations = make(map[string]string, len(entries))
+	}
+	for k, v := range entries {
+		b.Annotations[k] = v
+	}
 	return b
 }
 
@@ -98,8 +132,24 @@ func (b *RoleSpecApplyConfiguration) WithWorkload(value *WorkloadSpecApplyConfig
 // WithTemplate sets the Template field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the Template field is set to the value of the last call.
-func (b *RoleSpecApplyConfiguration) WithTemplate(value *v1.PodTemplateSpecApplyConfiguration) *RoleSpecApplyConfiguration {
-	b.Template = value
+func (b *RoleSpecApplyConfiguration) WithTemplate(value *corev1.PodTemplateSpecApplyConfiguration) *RoleSpecApplyConfiguration {
+	b.TemplateSourceApplyConfiguration.Template = value
+	return b
+}
+
+// WithTemplateRef sets the TemplateRef field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the TemplateRef field is set to the value of the last call.
+func (b *RoleSpecApplyConfiguration) WithTemplateRef(value *TemplateRefApplyConfiguration) *RoleSpecApplyConfiguration {
+	b.TemplateSourceApplyConfiguration.TemplateRef = value
+	return b
+}
+
+// WithTemplatePatch sets the TemplatePatch field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the TemplatePatch field is set to the value of the last call.
+func (b *RoleSpecApplyConfiguration) WithTemplatePatch(value runtime.RawExtension) *RoleSpecApplyConfiguration {
+	b.TemplatePatch = &value
 	return b
 }
 
@@ -111,10 +161,23 @@ func (b *RoleSpecApplyConfiguration) WithLeaderWorkerSet(value *LeaderWorkerTemp
 	return b
 }
 
+// WithComponents adds the given value to the Components field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Components field.
+func (b *RoleSpecApplyConfiguration) WithComponents(values ...*InstanceComponentApplyConfiguration) *RoleSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithComponents")
+		}
+		b.Components = append(b.Components, *values[i])
+	}
+	return b
+}
+
 // WithServicePorts adds the given value to the ServicePorts field in the declarative configuration
 // and returns the receiver, so that objects can be build by chaining "With" function invocations.
 // If called multiple times, values provided by each call will be appended to the ServicePorts field.
-func (b *RoleSpecApplyConfiguration) WithServicePorts(values ...corev1.ServicePort) *RoleSpecApplyConfiguration {
+func (b *RoleSpecApplyConfiguration) WithServicePorts(values ...v1.ServicePort) *RoleSpecApplyConfiguration {
 	for i := range values {
 		b.ServicePorts = append(b.ServicePorts, values[i])
 	}
@@ -139,5 +202,13 @@ func (b *RoleSpecApplyConfiguration) WithEngineRuntimes(values ...*EngineRuntime
 // If called multiple times, the ScalingAdapter field is set to the value of the last call.
 func (b *RoleSpecApplyConfiguration) WithScalingAdapter(value *ScalingAdapterApplyConfiguration) *RoleSpecApplyConfiguration {
 	b.ScalingAdapter = value
+	return b
+}
+
+// WithMinReadySeconds sets the MinReadySeconds field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the MinReadySeconds field is set to the value of the last call.
+func (b *RoleSpecApplyConfiguration) WithMinReadySeconds(value int32) *RoleSpecApplyConfiguration {
+	b.MinReadySeconds = &value
 	return b
 }

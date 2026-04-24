@@ -1,75 +1,391 @@
-# The RoleBasedGroup API
+# RoleBasedGroup (RBG) 🚀
 
-English｜[简体中文](./README-zh_CN.md)
+English | [简体中文](./README-zh_CN.md)
 
-**RoleBasedGroup**: An API for orchestrating distributed workload services with multirole collaboration and automated
-service discovery. It provides a common deployment pattern of AI inference workloads, especially for disaggregated
-prefill and decode architecture.
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/sgl-project/rbg/blob/main/LICENSE)
+[![GitHub release](https://img.shields.io/github/release/sgl-project/rbg.svg)](https://github.com/sgl-project/rbg/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/sgl-project/rbg)](https://goreportcard.com/report/github.com/sgl-project/rbg)
 
-## Latest News 🔥
+> 🎯 A Kubernetes API for orchestrating distributed, stateful AI inference workloads with **multi-role collaboration** and **built-in service discovery**.
 
-**[2025-07-21]** RBG v0.3.0 is released. Please check out
-the [release notes](https://github.com/sgl-project/rbg/releases) for more details.
+**🌐 Official Website**: [rolebasedgroup.github.io](https://rolebasedgroup.github.io)
 
-## Overview
+---
 
-Kubernetes StatefulSet is ill-suited for coordinating multiple roles in distributed, stateful services. This solution
-tackles the following challenges:
+## 📰 Latest News
 
-- Role startup-order dependencies
-- Complex, cross-role service discovery
-- Fragmented configuration management
+| Date | Release | Highlights |
+|:----:|:-------:|:-----------|
+| 2026-04-22 | [v0.7.0-alpha.3](https://github.com/sgl-project/rbg/releases/tag/v0.7.0-alpha.3) | `v1alpha2` conversion webhooks, CLI multi-node LLM serving |
+| 2026-03-31 | [v0.7.0-alpha.2](https://github.com/sgl-project/rbg/releases/tag/v0.7.0-alpha.2) | Pod port allocator, CLI foundations |
+| 2026-03-18 | [v0.7.0-alpha.1](https://github.com/sgl-project/rbg/releases/tag/v0.7.0-alpha.1) | `v1alpha2` API, coordinated policies, gang scheduling |
+| 2026-02-18 | [v0.6.0](https://github.com/sgl-project/rbg/releases/tag/v0.6.0) | Coordinated scaling, stateful InstanceSet |
+| 2025-12-03 | [v0.5.0](https://github.com/sgl-project/rbg/releases/tag/v0.5.0) | Native InstanceSet, in-place updates, Mooncake integration |
+| 2025-09-23 | [v0.4.0](https://github.com/sgl-project/rbg/releases/tag/v0.4.0) | RBGS scaling, Volcano podgroup support |
 
-### Key Features
+---
 
-- **Multirole Template Spec** - Model distributed stateful workloads as unified K8s workload groups.
-- **Role-based Startup Control** - Orchestrate StatefulSets by defining role dependencies and precise startup sequences
-  within a RoleBasedGroup.
-- **Auto Service Discovery** - Inject topology details via configs and env vars.
-- **Elastic Scaling** - Enable group/role-level scaling operations.
-- **Atomic Rollout** - Role-level rollout/update: Upgrade entire Roles sequentially as single units (all pods in the
-  same role updated simultaneously).
-- **Topology-aware Placement** - Guarantee co-location of group/role pods within the same topology domain.
-- **Atomic Failure Recovery** - Trigger full role recreation if any pod/container fails within the same group/role.
-- **Customizable Workload** - Support for multiple workload types (e.g. StatefulSet, Deployment, LeaderWorkerSet etc.)
-  for the role.
+## 🤔 Why RBG?
 
-## Architecture
+Traditional Kubernetes primitives (StatefulSets / Deployments) struggle with LLM inference services that:
 
-![](doc/rbgs-concept.png)
+| Challenge | Description |
+|:---------:|:------------|
+| Multi-role topologies | gateway → router → prefill → decode |
+| Performance-sensitive | GPU/network topology matters |
+| Atomic operations | deploy, upgrade, scale, failover across roles |
 
-## Getting Started
+**RBG** treats an inference service as a **role-based group** — a topologized, stateful, coordinated multi-role organism managed as a single unit.
 
-- [Install RBG Controller](doc/install.md)
-- [Quick Start](doc/quick_start.md)
+---
 
-## Documentation
+## 🎯 Key Concepts
 
-You can see our documentation at [docs](doc/TOC.md) for more in-depth installation and instructions for production.
+| Concept | Description |
+|:--------|:------------|
+| **Role** | Basic scheduling and rollout unit. Each role (prefill, decode) has its own spec, lifecycle and policies. |
+| **RoleBasedGroup** | A group of roles forming one logical service (e.g., one LLM inference deployment). |
+
+---
+
+## ✨ Key Features — SCOPE
+
+| Capability | Description |
+|:-----------|:------------|
+| **Stable** | Topology-aware deterministic operations with unique RoleID injection |
+| **Coordination** | Cross-role policy engine: deployment pairing, coordinated upgrades, linked recovery |
+| **Orchestration** | Role dependencies, precise startup sequences, topology self-aware service discovery |
+| **Performance** | Hardware affinity scheduling: GPU-NVLink → PCIe → RDMA → VPC |
+| **Extensible** | Declarative APIs and plugin mechanisms for future architectures |
+
+---
+
+## 🏗️ Architecture
+
+![RBG Architecture](doc/rbg-structure.png)
+
+---
+
+## 🚀 Getting Started
+
+### 📦 Installation
+
+```shell
+helm install rbg-controller oci://registry-1.docker.io/sglproject/rbg-controller-chart --version v0.7.0-alpha.3
+```
+
+For detailed instructions, see [Installation Guide](doc/install.md).
+
+### 🎮 Quick Start
+
+Deploy a basic RoleBasedGroup with two roles and startup dependencies:
+
+```yaml
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: nginx-cluster
+spec:
+  roles:
+    - name: frontend
+      replicas: 1
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: nginx
+                image: nginx:1.14.1
+                ports:
+                  - containerPort: 80
+
+    - name: backend
+      replicas: 3
+      dependencies: ["frontend"]  # backend starts after frontend is ready
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: nginx
+                image: nginx:1.14.1
+                ports:
+                  - containerPort: 8080
+```
+
+### Deployment Patterns
+
+| Pattern | Used For | Description |
+|:--------|:---------|:------------|
+| **standalonePattern** | router, prefill, single-GPU | Single pod per instance |
+| **leaderWorkerPattern** | decode, multi-GPU TP | Leader + workers for tensor parallelism |
+
+### RoleTemplates
+
+Reduce configuration duplication with reusable templates:
+
+```yaml
+spec:
+  roleTemplates:
+    - name: base-template
+      template:
+        spec:
+          containers:
+            - name: nginx
+              image: nginx:1.14.1
+
+  roles:
+    - name: frontend
+      replicas: 2
+      standalonePattern:
+        templateRef:
+          name: base-template
+
+    - name: backend
+      replicas: 3
+      standalonePattern:
+        templateRef:
+          name: base-template
+          patch:  # role-specific overrides
+            spec:
+              containers:
+                - name: nginx
+                  resources:
+                    requests:
+                      memory: "128Mi"
+```
+
+---
+
+## 🧠 Inference Examples
+
+### Prefill/Decode Disaggregated
+
+Deploy PD-disaggregated LLM inference with SGLang:
+
+```yaml
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: sglang-pd-inference
+spec:
+  roles:
+    # Router: SGLang Model Gateway
+    - name: router
+      replicas: 1
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: router
+                image: lmsysorg/sglang-router:v0.2.4
+                command:
+                  - python3
+                  - -m
+                  - sglang_router.launch_router
+                  - --pd-disaggregation
+                  - --prefill
+                  - "http://sglang-pd-inference-prefill-0.s-sglang-pd-inference-prefill:8000"
+                  - --decode
+                  - "http://sglang-pd-inference-decode-0.s-sglang-pd-inference-decode:8000"
+
+    # Prefill: prompt encoding engine
+    - name: prefill
+      replicas: 1
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: sglang
+                image: lmsysorg/sglang:v0.5.9
+                command:
+                  - python3
+                  - -m
+                  - sglang.launch_server
+                  - --model-path
+                  - "Qwen/Qwen3-0.6B"
+                  - --disaggregation-mode
+                  - "prefill"
+                resources:
+                  limits:
+                    nvidia.com/gpu: "1"
+
+    # Decode: token generation engine
+    - name: decode
+      replicas: 1
+      standalonePattern:
+        template:
+          spec:
+            containers:
+              - name: sglang
+                image: lmsysorg/sglang:v0.5.9
+                command:
+                  - python3
+                  - -m
+                  - sglang.launch_server
+                  - --model-path
+                  - "Qwen/Qwen3-0.6B"
+                  - --disaggregation-mode
+                  - "decode"
+                resources:
+                  limits:
+                    nvidia.com/gpu: "1"
+```
+
+### NVIDIA Dynamo Runtime
+
+Deploy with NVIDIA Dynamo SGLang runtime:
+
+```yaml
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: dynamo-pd-inference
+spec:
+  roleTemplates:
+    - name: dynamo-base
+      template:
+        spec:
+          containers:
+            - name: sglang
+              image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:1.0.1
+              env:
+                - name: DYN_DISCOVERY_BACKEND
+                  value: kubernetes
+
+  roles:
+    - name: processor
+      replicas: 1
+      standalonePattern:
+        templateRef:
+          name: dynamo-base
+          patch:
+            spec:
+              containers:
+                - name: sglang
+                  command:
+                    - python3
+                    - -m
+                    - dynamo.frontend
+
+    - name: prefill
+      replicas: 1
+      scalingAdapter:
+        enable: true
+      standalonePattern:
+        templateRef:
+          name: dynamo-base
+          patch:
+            spec:
+              containers:
+                - name: sglang
+                  command:
+                    - python3
+                    - -m
+                    - dynamo.sglang
+                  args:
+                    - --disaggregation-mode
+                    - prefill
+
+    - name: decode
+      replicas: 1
+      standalonePattern:
+        templateRef:
+          name: dynamo-base
+          patch:
+            spec:
+              containers:
+                - name: sglang
+                  command:
+                    - python3
+                    - -m
+                    - dynamo.sglang
+                  args:
+                    - --disaggregation-mode
+                    - decode
+```
+
+---
+
+## 📂 Examples Directory
+
+### 🧱 Basic Examples (`examples/basic/`)
+
+| Path | Description |
+|:-----|:------------|
+| `rbg/base.yaml` | Basic RoleBasedGroup with role dependencies |
+| `rbg/dependency/` | Role dependency configurations |
+| `rbg/patterns/` | Deployment patterns: standalone, leader-worker, custom-components |
+| `rbg/scheduling/` | Gang scheduling: Volcano, scheduler-plugins |
+| `rbg/update-strategy/` | Rolling update with partition support |
+| `rbg/restart-policy/` | Restart policy configurations |
+| `rbg/scaling/` | Scaling adapter with HPA integration |
+| `rbg/role-template/` | RoleTemplates for reducing duplication |
+| `coordinated-policy/` | Coordinated rollout and scaling policies |
+| `engine-runtime/` | Engine runtime profile configurations |
+
+### 🧠 Inference Examples (`examples/inference/`)
+
+| Path | Description |
+|:-----|:------------|
+| `agg-standalone.yaml` | Aggregated SGLang (standalone pattern) |
+| `agg-leader-worker.yaml` | Aggregated (leader-worker pattern) |
+| `pd-disagg-standalone.yaml` | Prefill/Decode disaggregated (standalone) |
+| `pd-disagg-leader-worker.yaml` | Prefill/Decode disaggregated (leader-worker) |
+| `ecosystem/` | NATS, etcd, Dynamo, Mooncake integration |
+| `ecosystem/dynamo/` | NVIDIA Dynamo runtime examples |
+| `ecosystem/mooncake/` | Mooncake KV cache transfer engine |
+
+---
+
+## 📚 Documentation
+
+| Source | Link |
+|:-------|:-----|
+| **Official Docs** | [rolebasedgroup.github.io](https://rolebasedgroup.github.io) |
+| **Local Docs** | [doc/TOC.md](doc/TOC.md) |
 
 ### Version Compatibility
 
-| RBG Version | Kubernetes Version | LeaderWorkerSet Version |
-|:-----------:|:------------------:|:-----------------------:|
-|    main     |     >=v1.28.x      |        >=v0.7.0         |
-|   v0.3.0    |     >=v1.28.x      |        >=v0.6.0         |
+| RBG Version | Kubernetes | LeaderWorkerSet |
+|:------------|:----------:|:---------------:|
+| main / v0.7.0-alpha.x | >=v1.22.x | Not Required |
+| v0.6.0 | >=v1.28.x | >=v0.7.0 |
+| v0.5.0 | >=v1.28.x | >=v0.6.0 |
+| v0.4.0 | >=v1.28.x | >=v0.7.0 |
 
-## Contributing
+---
 
-We welcome contributions through issues and PRs! See [CONTRIBUTING.md](doc/CONTRIBUTING.md)
+## 🤝 Contributing
 
-### Community, discussion, contribution, and support
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-Learn how to engage with the Kubernetes community on the [community page](https://kubernetes.io/community/).
+```shell
+# Verify copyright headers
+make copyright-check
 
-You can reach the maintainers of this project at:
+# Add missing headers
+make copyright-fix
+```
 
-- [Slack](https://sgl-fru7574.slack.com/archives/C098X0LQZV5)
+---
 
-### Code of conduct
+## 💬 Community
 
-Participation in the Kubernetes community is governed by the [Kubernetes Code of Conduct](doc/code-of-conduct.md).
+| Channel | Link |
+|:--------|:-----|
+| **Slack** | [#rbg channel](https://sgl-fru7574.slack.com/archives/C098X0LQZV5) |
+| **Issues** | [GitHub Issues](https://github.com/sgl-project/rbg/issues) |
+| **Discussions** | [Community Discussions](https://github.com/sgl-project/rbg/discussions) |
 
-## Acknowledgment
+### 📜 Code of Conduct
 
-We learned the design and reused code from the following projects: [lws](https://github.com/kubernetes-sigs/lws)
+This project follows the [Kubernetes Code of Conduct](doc/code-of-conduct.md).
+
+---
+
+## 🙏 Acknowledgment
+
+RBG is inspired by and reuses code from [LeaderWorkerSet (LWS)](https://github.com/kubernetes-sigs/lws).

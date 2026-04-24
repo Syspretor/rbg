@@ -1,0 +1,44 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: llm-serving-podmonitor
+  namespace: default
+  annotations:
+    arms.prometheus.io/discovery: "true"
+    arms.prometheus.io/resource: "arms"
+spec:
+  selector:
+    matchExpressions:
+      - key: alibabacloud.com/inference-workload
+        operator: Exists
+  namespaceSelector:
+    any: true
+  podMetricsEndpoints:
+    - interval: 15s
+      path: /metrics
+      port: "http"
+      relabelings:
+        - action: replace
+          sourceLabels:
+            - __meta_kubernetes_pod_name
+          targetLabel: pod_name
+        - action: replace
+          sourceLabels:
+            - __meta_kubernetes_namespace
+          targetLabel: pod_namespace
+        - action: replace
+          sourceLabels:
+            - __meta_kubernetes_pod_label_rolebasedgroup_workloads_x_k8s_io_role
+          regex: (.+)
+          targetLabel: rbg_role
+        # Allow to override workload-name with specific label
+        - action: replace
+          sourceLabels:
+            - __meta_kubernetes_pod_label_alibabacloud_com_inference_workload
+          regex: (.+)
+          targetLabel: workload_name
+        - action: replace
+          sourceLabels:
+            - __meta_kubernetes_pod_label_alibabacloud_com_inference_backend
+          regex: (.+)
+          targetLabel: backend

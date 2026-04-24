@@ -24,7 +24,7 @@ Typical reasons to open an issue include (but are not limited to):
 - Find documentation is incomplete or unclear
 - Find test cases that can be improved
 - Want a new feature
-- Propose a new feature design, including new architecture or API changes 
+- Propose a new feature design, including new architecture or API changes
 - Performance issues
 - General questions about the project
 - …
@@ -50,7 +50,7 @@ You should submit a PR for **any modification**, including but not limited to:
 - Add new features or enhance some feature
 - Refactor code
 - Improve performance
-- …
+- ...
 
 The following is a step-by-step guide for contributing code to RBG.
 
@@ -141,6 +141,7 @@ Once you've done your work on developing RGB, you are now ready to submit a PR t
    - PR titles are descriptive but concise.
    - Follow the [PR Template](.github/PULL_REQUEST_TEMPLATE.md).
    - Ensure all CI tests pass.
+   - For PRs that add or modify Go files, ensure the changed files contain the standard Apache 2.0 copyright header. You can check this locally with `make copyright-check`, or automatically add missing headers with `make copyright-fix`.
 
 ---
 
@@ -172,7 +173,7 @@ Though contributions via Github PR is an explicit way to help, we still call for
 
 You are warmly welcome if you'd like to join our community as a member. Together we can make this community even better!
 
-**Some requirements are needed to join our community**
+### Some requirements are needed to join our community
 
 - Read [this contributing guide](CONTRIBUTING.md) carefully
 - Promise to comply with our [Code of Conduct](doc/code-of-conduct.md)
@@ -182,10 +183,11 @@ You are warmly welcome if you'd like to join our community as a member. Together
   - Participate in discussions
   - Review PRs
   - Submit PRs  
- 
-**How to join:**
+
+### How to join
 
 You can do it in either of the following two ways:
+
 - Submit a PR to introduce yourself to the community  
 - Or contact us via [Slack Channel](https://sgl-fru7574.slack.com/archives/C098X0LQZV5)
 
@@ -193,4 +195,3 @@ You can do it in either of the following two ways:
 
 💡 **Tip:** Whether you're fixing a small typo or proposing a major feature — every contribution is valuable.  
 Thank you for helping make **RBG** better! 🚀
-

@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package v1alpha1
 
 import (
@@ -27,11 +43,21 @@ func (rbg *RoleBasedGroup) GetCommonAnnotationsFromRole(role *RoleSpec) map[stri
 func (rbg *RoleBasedGroup) GetGroupSize() int {
 	ret := 0
 	for _, role := range rbg.Spec.Roles {
-		if role.Workload.String() == LeaderWorkerSetWorkloadType {
-			ret += int(*role.LeaderWorkerSet.Size) * int(*role.Replicas)
-		} else {
-			ret += int(*role.Replicas)
+		if role.Replicas == nil {
+			continue
 		}
+
+		if role.Workload.String() == LeaderWorkerSetWorkloadType ||
+			(role.Workload.String() == InstanceSetWorkloadType && role.LeaderWorkerSet != nil) {
+			sizePerReplica := int32(1)
+			if role.LeaderWorkerSet != nil && role.LeaderWorkerSet.Size != nil && *role.LeaderWorkerSet.Size > 0 {
+				sizePerReplica = *role.LeaderWorkerSet.Size
+			}
+			ret += int(sizePerReplica * *role.Replicas)
+			continue
+		}
+
+		ret += int(*role.Replicas)
 	}
 	return ret
 }
@@ -137,4 +163,104 @@ func (rbgsa *RoleBasedGroupScalingAdapter) ContainsRBGOwner(rbg *RoleBasedGroup)
 		}
 	}
 	return false
+}
+
+func (p *PodGroupPolicy) EnableGangScheduling() bool {
+	return p.IsKubeGangScheduling() || p.IsVolcanoGangScheduling()
+}
+
+func (p *PodGroupPolicy) IsVolcanoGangScheduling() bool {
+	return p != nil && p.PodGroupPolicySource.VolcanoScheduling != nil
+}
+
+func (p *PodGroupPolicy) IsKubeGangScheduling() bool {
+	return p != nil && p.PodGroupPolicySource.KubeScheduling != nil
+}
+
+func (instance *Instance) GetInstancePattern() InstancePatternType {
+	return InstancePatternType(instance.Annotations[RBGInstancePatternAnnotationKey])
+}
+
+func (instance *Instance) GetRoleTemplateType() RBGRoleTemplateType {
+	return RBGRoleTemplateType(instance.Labels[RBGRoleTemplateTypeLabelKey])
+}
+
+// FindRoleTemplate finds a RoleTemplate by name in the RoleBasedGroup's spec.
+// Returns a deep copy of the template if found, or an error if not found.
+func (rbg *RoleBasedGroup) FindRoleTemplate(name string) (*RoleTemplate, error) {
+	if name == "" {
+		return nil, errors.New("template name cannot be empty")
+	}
+
+	for i := range rbg.Spec.RoleTemplates {
+		if rbg.Spec.RoleTemplates[i].Name == name {
+			return rbg.Spec.RoleTemplates[i].DeepCopy(), nil
+		}
+	}
+	return nil, fmt.Errorf("roleTemplate %q not found in spec.roleTemplates", name)
+}
+
+func (rbg *RoleBasedGroup) GetKey() string {
+	return fmt.Sprintf("%s/%s", rbg.Namespace, rbg.Name)
+}
+
+func (rbg *RoleBasedGroup) GetDiscoveryConfigMode() DiscoveryConfigMode {
+	if rbg == nil || rbg.Annotations == nil {
+		return ""
+	}
+	return DiscoveryConfigMode(rbg.Annotations[DiscoveryConfigModeAnnotationKey])
+}
+
+func (rbg *RoleBasedGroup) SetDiscoveryConfigMode(mode DiscoveryConfigMode) {
+	if rbg == nil {
+		return
+	}
+	if rbg.Annotations == nil {
+		rbg.Annotations = map[string]string{}
+	}
+	rbg.Annotations[DiscoveryConfigModeAnnotationKey] = string(mode)
+}
+
+func (rbg *RoleBasedGroup) HasStatefulRole() bool {
+	if rbg == nil {
+		return false
+	}
+	for i := range rbg.Spec.Roles {
+		if IsStatefulRole(&rbg.Spec.Roles[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func IsStatefulRole(role *RoleSpec) bool {
+	if role == nil {
+		return false
+	}
+	switch role.Workload.String() {
+	case DeploymentWorkloadType:
+		return false
+	case StatefulSetWorkloadType, LeaderWorkerSetWorkloadType, "":
+		return true
+	case InstanceSetWorkloadType:
+		pattern := InstancePatternType(role.Annotations[RBGInstancePatternAnnotationKey])
+		return pattern != StatelessInstancePattern
+	default:
+		// Keep unknown kinds conservative and stateful by default.
+		return true
+	}
+}
+
+// UsesRoleTemplate returns true if the role uses a RoleTemplate (has templateRef set).
+func (r *RoleSpec) UsesRoleTemplate() bool {
+	return r.TemplateSource.TemplateRef != nil
+}
+
+// GetEffectiveTemplateName returns the name of the template this role uses.
+// Returns empty string if the role doesn't use a template.
+func (r *RoleSpec) GetEffectiveTemplateName() string {
+	if r.TemplateSource.TemplateRef != nil {
+		return r.TemplateSource.TemplateRef.Name
+	}
+	return ""
 }

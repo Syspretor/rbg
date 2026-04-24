@@ -13,14 +13,6 @@ env:
 permissions: read-all
 
 jobs:
-  staticcheck:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5.0.0
-      - uses: dominikh/staticcheck-action@v1.4.0
-        with:
-          checks: 'inherit,-SA1019'
-
   lint:
     runs-on: ubuntu-latest
     env:
@@ -53,12 +45,46 @@ jobs:
           git status --porcelain
           if [ -z "`git status --porcelain`" ]; then echo "CRD validation passed."; else echo "CRD validation failed. Please use 'make update-crd' to keep CRDs latest"; exit 1; fi      
 
+      - name: Generate validation check
+        run: |
+          make generate
+          git status --porcelain
+          if [ -z "`git status --porcelain`" ]; then echo "Generate validation passed."; else echo "Generate validation failed. Please use 'make generate' to keep generated code latest"; exit 1; fi
+
+      - name: YAML lint check
+        run: |
+          pip install yamllint
+          yamllint -c .yamllint.yml config/ deploy/ examples/
+
       - name: Code check
         run: |
           make fmt vet lint
           find ./deploy/helm | grep Chart.yaml | xargs dirname | xargs helm lint
 
   build:
+    env:
+      GOPATH: ${{ github.workspace }}
+      GO111MODULE: auto
+    defaults:
+      run:
+        working-directory: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+
+      - name: Build binary
+        run: |
+          make build
+
+  unit-test:
     env:
       GOPATH: ${{ github.workspace }}
       GO111MODULE: auto
@@ -77,8 +103,9 @@ jobs:
         uses: actions/checkout@v5.0.0
         with:
           path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+          fetch-depth: 0
 
-      - name: CI Preparation
+      - name: Test Preparation
         run: |
           arch=$(go env GOARCH)
           os=$(go env GOOS)
@@ -86,12 +113,46 @@ jobs:
           sudo mv /tmp/kubebuilder_2.3.1_${os}_${arch} /usr/local/kubebuilder
           export PATH=$PATH:/usr/local/kubebuilder/bin
 
-      - name: CI script
+      - name: Run Unit Tests
         run: |
-          make build
           make test
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+      - name: Check incremental coverage for pkg changes
+        if: github.event_name == 'pull_request'
+        run: |
+          # Simple incremental coverage check for pkg directory
+          changed_files=$(git diff --name-only origin/${{ github.base_ref }}...HEAD | grep '^pkg/' | grep '\.go$' | grep -v '_test\.go$' || true)
+          
+          if [ -z "$changed_files" ]; then
+            echo "✅ No pkg files changed, skipping coverage check"
+            exit 0
+          fi
+          
+          echo "📊 Checking coverage for changed files in pkg directory"
+          echo "Changed files:"
+          echo "$changed_files"
+          
+          # Check if coverage file exists
+          if [ ! -f cover.out ]; then
+            echo "❌ No coverage file found"
+            exit 1
+          fi
+          
+          # Calculate overall coverage for changed files
+          for file in $changed_files; do
+            if grep -q "^$file:" cover.out; then
+              echo "✅ $file has test coverage"
+            else
+              echo "⚠️  $file has no test coverage"
+            fi
+          done
+          
+          echo "✅ Coverage check completed. Detailed analysis available on Coveralls."
+
+      - name: Upload coverage to Coveralls
+        uses: coverallsapp/github-action@v2
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path-to-lcov: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs/cover.out
+          format: golang
+          flag-name: unit-tests

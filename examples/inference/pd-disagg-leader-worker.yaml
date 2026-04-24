@@ -1,0 +1,195 @@
+# Example: PD-Disaggregated with LeaderWorker pattern (v1alpha2)
+# Uses leaderWorkerPattern for tensor-parallel inference where each instance
+# requires multiple GPUs (1 leader + N workers per instance).
+#
+# Architecture:
+#   - router: SGLang Model Gateway (SMG) for request routing and dispatching
+#   - prefill: 2 instances, each with 1 leader + 3 workers (8x GPU total)
+#   - decode: 4 instances, each with 1 leader + 1 worker (8x GPU total)
+#
+# Model: Qwen/Qwen3-0.6B (lightweight model suitable for testing PD disaggregation)
+#
+# Features demonstrated:
+#   - LeaderWorkerPattern for distributed inference deployment
+#   - scalingAdapter for HPA integration
+#   - rolloutStrategy with InPlaceIfPossible
+#
+# Note: When scalingAdapter is enabled in a role, the corresponding
+# RoleBasedGroupScalingAdapter CR will be automatically created by the
+# controller. Its lifecycle is bound to the RoleBasedGroup, so you can
+# directly use it for HPA without manually creating it.
+#
+# Prerequisites:
+#   - SGLang docker image: lmsysorg/sglang:v0.5.9-cu124 (or later)
+#   - SGLang Router docker image: lmsysorg/sglang-router:v0.2.4 (or later)
+#   - GPU nodes with CUDA support
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: pd-disagg-lws
+  labels:
+    app: llm-inference-tp
+    deployment-type: pd-disaggregated-tensor-parallel
+    model: qwen-0.6b
+spec:
+  roles:
+    # Router: SGLang Model Gateway (SMG) for PD disaggregation
+    - name: router
+      replicas: 1
+      standalonePattern:
+        template:
+          metadata:
+            labels:
+              app: llm-inference-tp
+              role: router
+          spec:
+            containers:
+              - name: router
+                image: lmsysorg/sglang-router:v0.2.4
+                command:
+                  - python3
+                  - -m
+                  - sglang_router.launch_router
+                  - --pd-disaggregation
+                  - --prefill
+                  - "http://pd-disagg-lws-prefill-0.s-pd-disagg-lws-prefill:8000"
+                  - --decode
+                  - "http://pd-disagg-lws-decode-0.s-pd-disagg-lws-decode:8000"
+                  - --host
+                  - "0.0.0.0"
+                  - --port
+                  - "8000"
+                ports:
+                  - name: http
+                    containerPort: 8000
+                  - name: metrics
+                    containerPort: 9090
+
+    # Prefill: 2 instances, tensor parallel size = 4 (1 leader + 3 workers)
+    - name: prefill
+      replicas: 2
+      restartPolicy: None
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+      leaderWorkerPattern:
+        size: 4   # 1 leader + 3 workers per instance
+        template:
+          metadata:
+            labels:
+              app: llm-inference-tp
+          spec:
+            volumes:
+              - name: dshm
+                emptyDir:
+                  medium: Memory
+                  sizeLimit: 30Gi
+            containers:
+              - name: sglang
+                image: lmsysorg/sglang
+                command:
+                  - python3
+                  - -m
+                  - sglang.launch_server
+                  - --model-path
+                  - "Qwen/Qwen3-0.6B"
+                  - --host
+                  - "0.0.0.0"
+                  - --port
+                  - "8000"
+                  - --disaggregation-mode
+                  - "prefill"
+                  - --tp-size
+                  - "4"
+                  - --dist-init-addr
+                  - $(RBG_LWP_LEADER_ADDRESS):6379
+                  - --nnodes
+                  - $(RBG_LWP_GROUP_SIZE)
+                  - --node-rank
+                  - $(RBG_LWP_WORKER_INDEX)
+                ports:
+                  - name: grpc
+                    containerPort: 8000
+                resources:
+                  requests:
+                    nvidia.com/gpu: "1"
+                  limits:
+                    nvidia.com/gpu: "1"
+                volumeMounts:
+                  - name: dshm
+                    mountPath: /dev/shm
+        leaderTemplatePatch:
+          metadata:
+            labels:
+              role: leader
+        workerTemplatePatch:
+          metadata:
+            labels:
+              role: worker
+
+    # Decode: 4 instances, tensor parallel size = 2 (1 leader + 1 worker)
+    - name: decode
+      replicas: 4
+      restartPolicy: None
+      rolloutStrategy:
+        type: RollingUpdate
+        rollingUpdate:
+          type: InPlaceIfPossible
+          maxUnavailable: 1
+      leaderWorkerPattern:
+        size: 2   # 1 leader + 1 worker per instance
+        template:
+          metadata:
+            labels:
+              app: llm-inference-tp
+          spec:
+            volumes:
+              - name: dshm
+                emptyDir:
+                  medium: Memory
+                  sizeLimit: 30Gi
+            containers:
+              - name: sglang
+                image: lmsysorg/sglang
+                command:
+                  - python3
+                  - -m
+                  - sglang.launch_server
+                  - --model-path
+                  - "Qwen/Qwen3-0.6B"
+                  - --host
+                  - "0.0.0.0"
+                  - --port
+                  - "8000"
+                  - --disaggregation-mode
+                  - "decode"
+                  - --tp-size
+                  - "2"
+                  - --dist-init-addr
+                  - $(RBG_LWP_LEADER_ADDRESS):6379
+                  - --nnodes
+                  - $(RBG_LWP_GROUP_SIZE)
+                  - --node-rank
+                  - $(RBG_LWP_WORKER_INDEX)
+                ports:
+                  - name: grpc
+                    containerPort: 8000
+                resources:
+                  requests:
+                    nvidia.com/gpu: "1"
+                  limits:
+                    nvidia.com/gpu: "1"
+                volumeMounts:
+                  - name: dshm
+                    mountPath: /dev/shm
+        leaderTemplatePatch:
+          metadata:
+            labels:
+              role: leader
+        workerTemplatePatch:
+          metadata:
+            labels:
+              role: worker

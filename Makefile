@@ -3,11 +3,17 @@
 IMG_REPO ?= rolebasedgroup
 RBG_CONTROLLER_IMG ?= ${IMG_REPO}/rbgs-controller
 CRD_UPGRADER_IMG ?= ${IMG_REPO}/rbgs-upgrade-crd
+PATIO_IMG ?= ${IMG_REPO}/rbgs-patio-runtime
+BENCHMARK_DASHBOARD_IMG ?= ${IMG_REPO}/rbgs-benchmark-dashboard
+BENCHMARK_TOOL_GENAI_IMG ?= ${IMG_REPO}/rbgs-benchmark-tool-genai
 
 RBG_CONTROLLER_DOCKERFILE ?= Dockerfile
 CRD_UPGRADER_DOCKERFILE ?= tools/crd-upgrade/Dockerfile
+PATIO_DOCKERFILE ?= python/patio/Dockerfile
+BENCHMARK_DASHBOARD_DOCKERFILE ?= cmd/cli/cmd/llm/benchmark/dashboard/Dockerfile
+BENCHMARK_TOOL_GENAI_DOCKERFILE ?= tools/benchmark/genai/Dockerfile
 
-VERSION ?= v0.5.0
+VERSION ?= v0.7.0
 GIT_SHA ?= $(shell git rev-parse --short HEAD || echo "HEAD")
 TAG ?= ${VERSION}-${GIT_SHA}
 
@@ -59,8 +65,8 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,crdVersions=v1,generateEmbeddedObjectMeta=true,ignoreUnexportedFields=true,maxDescLen=200 webhook paths="./..." output:crd:artifacts:config=config/crd/bases
-	cp config/crd/bases/* deploy/helm/rbgs/crds/
+	$(CONTROLLER_GEN) crd:allowDangerousTypes=true,crdVersions=v1,generateEmbeddedObjectMeta=true,ignoreUnexportedFields=true,maxDescLen=200 rbac:roleName=rbgs-controller-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:rbac:artifacts:config=config/rbac
+	cp config/rbac/role.yaml deploy/helm/rbgs/templates/clusterrole.yaml
 
 .PHONY: generate
 generate: controller-gen code-generator ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -77,8 +83,14 @@ vet: ## Run go vet against code.
 
 .PHONY: test
 test: manifests generate fmt vet ## Run tests.
-	go test $$(go list ./cmd/... ./internal/... ./pkg/... ) -coverprofile cover.out
+	go test $$(go list ./api/... ./cmd/... ./internal/... ./pkg/... ) -coverprofile cover.out
 	go tool cover -func=cover.out | awk '/^total:/ {print $$3}'
+
+.PHONY: test-envtest
+test-envtest: manifests generate setup-envtest ## Run envtest integration tests.
+	@echo "Running envtest tests..."
+	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+		go test -v ./test/envtest/testcase/... -timeout 30m
 
 .PHONY: test-coverage-html
 test-coverage-html: test
@@ -89,8 +101,8 @@ test-coverage-html: test
 # CertManager is installed by default; skip with:
 # - CERT_MANAGER_INSTALL_SKIP=true
 .PHONY: test-e2e
-test-e2e: manifests generate fmt vet ## Run the e2e tests.
-	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast
+test-e2e:  ## Run the e2e tests.
+	go test ./test/e2e/ -v -ginkgo.v --ginkgo.fail-fast -timeout 30m
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -104,15 +116,27 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	$(GOLANGCI_LINT) config verify
 
+.PHONY: copyright-check
+copyright-check: ## Check copyright headers on changed Go files against BASE_REF (default: origin/main).
+	./tools/check-copyright-on-pr-go-files.sh --base-ref "$${BASE_REF:-origin/main}"
+
+.PHONY: copyright-fix
+copyright-fix: ## Add copyright headers to changed Go files against BASE_REF (default: origin/main).
+	./tools/add-copyright-to-pr-go-files.sh --base-ref "$${BASE_REF:-origin/main}"
+
 ##@ Build
 
 # Build docker images
 DOCKER_BUILD := docker-build-controller
 DOCKER_BUILD += docker-build-crd-upgrader
+DOCKER_BUILD_BENCHMARK := docker-build-benchmark-dashboard
+DOCKER_BUILD_BENCHMARK += docker-build-benchmark-tool-genai
 
 # Push docker images
 DOCKER_PUSH := docker-push-controller
 DOCKER_PUSH += docker-push-crd-upgrader
+DOCKER_PUSH_BENCHMARK := docker-push-benchmark-dashboard
+DOCKER_PUSH_BENCHMARK += docker-push-benchmark-tool-genai
 
 GOPROXY    ?=
 GOPRIVATE  ?=
@@ -121,7 +145,9 @@ GOSUMDB    ?=
 DOCKER_BUILD_ARGS := \
 	--build-arg GOPROXY=$(GOPROXY) \
 	--build-arg GOPRIVATE=$(GOPRIVATE) \
-	--build-arg GOSUMDB=$(GOSUMDB)
+	--build-arg GOSUMDB=$(GOSUMDB) \
+	$(if $(TARGETARCH),--build-arg TARGETARCH=$(TARGETARCH)) \
+	$(if $(TARGETOS),--build-arg TARGETOS=$(TARGETOS))
 
 # ldflags
 VERSION_PKG=sigs.k8s.io/rbgs/version
@@ -130,7 +156,7 @@ BUILD_DATE=$(shell date +%Y-%m-%dT%H:%M:%S%z)
 ldflags="-s -w -X $(VERSION_PKG).Version=$(TAG) -X $(VERSION_PKG).GitCommit=${GIT_COMMIT} -X ${VERSION_PKG}.BuildDate=${BUILD_DATE}"
 
 .PHONY: build
-build: test ## Build manager binary.
+build: ## Build manager binary.
 	GOARCH=${TARGETARCH} \
 	GOOS=${TARGETOS} \
 	CGO_ENABLED=0 \
@@ -147,6 +173,26 @@ build-cli:  ## Build cli binary.
 	GOPROXY=${GOPROXY} \
 	go build -mod vendor -v -o bin/kubectl-rbg -ldflags $(ldflags) cmd/cli/main.go
 
+CLI_PLATFORMS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+
+.PHONY: build-cli-all
+build-cli-all: ## Build cli binaries for all platforms.
+	@for platform in $(CLI_PLATFORMS); do \
+		GOOS=$${platform%%/*} GOARCH=$${platform##*/} \
+		CGO_ENABLED=0 GO111MODULE=on GOPROXY=${GOPROXY} \
+		go build -mod vendor -v -o bin/kubectl-rbg-$${platform%%/*}-$${platform##*/} -ldflags $(ldflags) cmd/cli/main.go; \
+		echo "Built bin/kubectl-rbg-$${platform%%/*}-$${platform##*/}"; \
+	done
+
+.PHONY: build-benchmark-dashboard
+build-benchmark-dashboard: ## Build benchmark-dashboard binary.
+	GOARCH=${TARGETARCH} \
+	GOOS=${TARGETOS} \
+	CGO_ENABLED=0 \
+	GO111MODULE=on \
+	GOPROXY=${GOPROXY} \
+	go build -v -o bin/benchmark-dashboard -ldflags $(ldflags) ./cmd/cli/cmd/llm/benchmark/dashboard/
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/rbgs/main.go
@@ -162,8 +208,31 @@ docker-build-controller: ## Build docker image with the manager.
 docker-build-crd-upgrader:
 	$(CONTAINER_TOOL) build -f ${CRD_UPGRADER_DOCKERFILE} -t ${CRD_UPGRADER_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
 
+.PHONY: docker-build-patio
+docker-build-patio:
+	$(CONTAINER_TOOL) build -f ${PATIO_DOCKERFILE} -t ${PATIO_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
+
+.PHONY: docker-build-benchmark-dashboard
+docker-build-benchmark-dashboard: ## Build docker image for benchmark-dashboard
+	$(CONTAINER_TOOL) build -f ${BENCHMARK_DASHBOARD_DOCKERFILE} -t ${BENCHMARK_DASHBOARD_IMG}:${TAG} $(DOCKER_BUILD_ARGS) .
+
+.PHONY: docker-push-benchmark-dashboard
+docker-push-benchmark-dashboard: ## Push docker image for benchmark-dashboard
+	$(CONTAINER_TOOL) push ${BENCHMARK_DASHBOARD_IMG}:${TAG}
+
+.PHONY: docker-build-benchmark-tool-genai
+docker-build-benchmark-tool-genai: ## Build docker image for benchmark benchmark-tool (genai-bench)
+	$(CONTAINER_TOOL) build -f ${BENCHMARK_TOOL_GENAI_DOCKERFILE} -t ${BENCHMARK_TOOL_GENAI_IMG}:${TAG} .
+
+.PHONY: docker-push-benchmark-tool-genai
+docker-push-benchmark-tool-genai: ## Push docker image for benchmark benchmark-tool
+	$(CONTAINER_TOOL) push ${BENCHMARK_TOOL_GENAI_IMG}:${TAG}
+
 .PHONY: docker-build
 docker-build: ${DOCKER_BUILD}
+
+.PHONY: docker-build-benchmark
+docker-build-benchmark: ${DOCKER_BUILD_BENCHMARK}
 
 .PHONY: docker-push-controller
 docker-push-controller:
@@ -173,8 +242,15 @@ docker-push-controller:
 docker-push-crd-upgrader:
 	docker push ${CRD_UPGRADER_IMG}:${TAG}
 
+.PHONY: docker-push-patio
+docker-push-patio:
+	docker push ${PATIO_IMG}:${TAG}
+
 .PHONY: docker-push
 docker-push: ${DOCKER_PUSH}
+
+.PHONY: docker-push-benchmark
+docker-push-benchmark: ${DOCKER_PUSH_BENCHMARK}
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
@@ -182,16 +258,30 @@ docker-push: ${DOCKER_PUSH}
 # - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 # - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
 # To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
-PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
+PLATFORMS ?= linux/amd64,linux/arm64
 .PHONY: docker-buildx
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
 	- $(CONTAINER_TOOL) buildx create --name rbgs-builder
 	$(CONTAINER_TOOL) buildx use rbgs-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${RBG_CONTROLLER_IMG}:${TAG} -f Dockerfile.cross .
+	$(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${RBG_CONTROLLER_IMG}:${TAG} $(DOCKER_BUILD_ARGS) -f Dockerfile .
 	- $(CONTAINER_TOOL) buildx rm rbgs-builder
-	rm Dockerfile.cross
+
+.PHONY: docker-buildx-push-crd-upgrader
+docker-buildx-push-crd-upgrader: ## Build and push CRD Upgrader image for cross-platform support
+	- $(CONTAINER_TOOL) buildx create --name rbgs-crd-builder
+	$(CONTAINER_TOOL) buildx use rbgs-crd-builder
+	$(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${CRD_UPGRADER_IMG}:${TAG} $(DOCKER_BUILD_ARGS) -f ${CRD_UPGRADER_DOCKERFILE} .
+	- $(CONTAINER_TOOL) buildx rm rbgs-crd-builder
+
+.PHONY: docker-buildx-push-patio
+docker-buildx-push-patio: ## Build and push patio image for cross-platform support
+	- $(CONTAINER_TOOL) buildx create --name rbgs-patio-builder
+	$(CONTAINER_TOOL) buildx use rbgs-patio-builder
+	$(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${PATIO_IMG}:${TAG} $(DOCKER_BUILD_ARGS) -f ${PATIO_DOCKERFILE} .
+	- $(CONTAINER_TOOL) buildx rm rbgs-patio-builder
+
+.PHONY: docker-buildx-push
+docker-buildx-push: docker-buildx docker-buildx-push-crd-upgrader docker-buildx-push-patio ## Build and push multi-arch controller, CRD upgrader, and patio images
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
@@ -217,11 +307,34 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${RBG_CONTROLLER_IMG}:${TAG}
-	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
+	$(KUSTOMIZE) build config/default | $(KUBECTL) apply --server-side -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+
+.PHONY: helm-deploy
+helm-deploy: manifests ## Deploy controller via Helm to the K8s cluster specified in ~/.kube/config.
+	$(HELM) upgrade --install rbgs deploy/helm/rbgs \
+		--create-namespace \
+		--namespace rbgs-system \
+		--set image.tag=$(TAG) \
+		--wait
+
+.PHONY: install-crds
+install-crds: manifests ## Install CRDs into the K8s cluster.
+	@echo "Installing CRDs..."
+	$(KUBECTL) apply --server-side -f config/crd/bases/
+
+.PHONY: uninstall-crds
+uninstall-crds: ## Uninstall CRDs from the K8s cluster (WARNING: deletes all CR instances).
+	@echo "WARNING: This will delete all RoleBasedGroup/InstanceSet resources!"
+	$(KUBECTL) delete -f config/crd/bases/ --ignore-not-found
+
+.PHONY: helm-undeploy
+helm-undeploy: ## Undeploy controller installed via Helm from the K8s cluster.
+	$(HELM) uninstall rbgs --namespace rbgs-system || true
+	@echo "Note: CRDs are preserved. Run 'make uninstall-crds' to remove them."
 
 ##@ Dependencies
 
@@ -235,6 +348,11 @@ KUBECTL ?= kubectl
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+SETUP_ENVTEST ?= $(LOCALBIN)/setup-envtest
+HELM ?= helm
+
+## Envtest K8s version
+ENVTEST_K8S_VERSION ?= 1.31.0
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.5.0
@@ -255,6 +373,12 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: setup-envtest
+setup-envtest: $(SETUP_ENVTEST) ## Download setup-envtest locally if necessary.
+$(SETUP_ENVTEST): $(LOCALBIN)
+	@echo "Installing setup-envtest..."
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
