@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package utils
 
 import (
@@ -12,7 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestCheckOwnerReference(t *testing.T) {
@@ -344,8 +360,8 @@ func TestGVKConstants(t *testing.T) {
 			name:   "RoleBasedGroup GVK",
 			actual: GetRbgGVK(),
 			expected: schema.GroupVersionKind{
-				Group:   workloadsv1alpha1.GroupVersion.Group,
-				Version: workloadsv1alpha1.GroupVersion.Version,
+				Group:   workloadsv1alpha2.GroupVersion.Group,
+				Version: workloadsv1alpha2.GroupVersion.Version,
 				Kind:    "RoleBasedGroup",
 			},
 		},
@@ -353,8 +369,8 @@ func TestGVKConstants(t *testing.T) {
 			name:   "RoleBasedGroupScalingAdapter GVK",
 			actual: GetRbgScalingAdapterGVK(),
 			expected: schema.GroupVersionKind{
-				Group:   workloadsv1alpha1.GroupVersion.Group,
-				Version: workloadsv1alpha1.GroupVersion.Version,
+				Group:   workloadsv1alpha2.GroupVersion.Group,
+				Version: workloadsv1alpha2.GroupVersion.Version,
 				Kind:    "RoleBasedGroupScalingAdapter",
 			},
 		},

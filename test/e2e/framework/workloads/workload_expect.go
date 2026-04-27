@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package workloads
 
 import (
@@ -7,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
@@ -30,6 +47,8 @@ func NewWorkloadEqualChecker(
 		return NewStatefulSetEqualChecker(ctx, client), nil
 	case v1alpha1.LeaderWorkerSetWorkloadType:
 		return NewLeaderWorkerSetEqualChecker(ctx, client), nil
+	case v1alpha1.InstanceSetWorkloadType:
+		return NewInstanceSetChecker(ctx, client), nil
 	default:
 		return nil, fmt.Errorf("unsupported workload type: %s", workloadType)
 	}
@@ -49,7 +68,7 @@ func semanticallyEqualAffinity(affinity *corev1.Affinity, topologyKey string, un
 		}
 
 		for _, expression := range term.LabelSelector.MatchExpressions {
-			if expression.Key != v1alpha1.SetGroupUniqueHashLabelKey ||
+			if expression.Key != constants.GroupUniqueHashLabelKey ||
 				expression.Operator != v1.LabelSelectorOpIn ||
 				expression.Values[0] != uniqueKey {
 				return fmt.Errorf("PodAffinity.LabelSelector.MatchExpressions not equal")
@@ -67,7 +86,7 @@ func semanticallyEqualAffinity(affinity *corev1.Affinity, topologyKey string, un
 		}
 
 		for _, expression := range term.LabelSelector.MatchExpressions {
-			if expression.Key != v1alpha1.SetGroupUniqueHashLabelKey {
+			if expression.Key != constants.GroupUniqueHashLabelKey {
 				return fmt.Errorf("PodAntiAffinity.LabelSelector.MatchExpressions.Key not equal")
 			}
 			if expression.Operator != v1.LabelSelectorOpNotIn && expression.Operator != v1.LabelSelectorOpExists {

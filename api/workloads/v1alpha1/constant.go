@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package v1alpha1
 
 import v1 "k8s.io/api/core/v1"
@@ -49,30 +65,134 @@ const (
 
 	// SetRBGIndexLabelKey SetRBGIndex identifies the index of the rbg within the rbgset
 	SetRBGIndexLabelKey = RBGSetPrefix + "rbg-index"
+
+	// DiscoveryConfigModeAnnotationKey identifies discovery config handling mode.
+	// Supported values: legacy, refine.
+	DiscoveryConfigModeAnnotationKey = RBGPrefix + "discovery-config-mode"
+)
+
+// DiscoveryConfigMode defines discovery config handling mode.
+type DiscoveryConfigMode string
+
+const (
+	// LegacyDiscoveryConfigMode keeps legacy role-level ConfigMap behavior.
+	LegacyDiscoveryConfigMode DiscoveryConfigMode = "legacy"
+
+	// RefineDiscoveryConfigMode enables refined shared ConfigMap behavior.
+	RefineDiscoveryConfigMode DiscoveryConfigMode = "refine"
+)
+
+const ComponentLabelPrefix = "component." + RBGPrefix
+
+// Generic component label keys
+const (
+	// RBGComponentNameLabelKey identifies the component name (e.g., leader/worker/coordinator)
+	RBGComponentNameLabelKey = ComponentLabelPrefix + "name"
+
+	// RBGComponentIndexLabelKey identifies the component instance index
+	// Under InstanceSet/StatefulSet pattern, RBGComponentIndex = InstanceComponentID
+	// Under LeaderWorkerSet pattern:
+	// - leader's RBGComponentIndex = "0"
+	// - worker's RBGComponentIndex = InstanceComponentIDKey.value + 1
+	RBGComponentIndexLabelKey = ComponentLabelPrefix + "index"
+
+	// RBGComponentSizeLabelKey identifies the component size
+	RBGComponentSizeLabelKey = ComponentLabelPrefix + "size"
+)
+
+const InstanceLabelPrefix = "instance." + RBGPrefix
+
+const InstanceAnnotationPrefix = "instance." + RBGPrefix
+
+// Generic instance annotation keys
+const (
+	// RBGInstancePatternAnnotationKey identifies the instance organization pattern (Stateful/Stateless)
+	// This annotation is used to control the reconciliation mode of InstanceSet
+	RBGInstancePatternAnnotationKey = InstanceAnnotationPrefix + "pattern"
+)
+
+// InstancePatternType defines supported organization patterns
+type InstancePatternType string
+
+const (
+	// StatelessInstancePattern represents stateless (unordered) topology pattern
+	StatelessInstancePattern InstancePatternType = "Stateless"
+
+	// StatefulInstancePattern represents stateful (ordered) topology pattern
+	StatefulInstancePattern InstancePatternType = "Stateful"
+)
+
+const RoleLabelPrefix = "role." + RBGPrefix
+
+// Generic role label keys
+const (
+	// RBGRoleTemplateTypeLabelKey identifies the role organization pattern
+	RBGRoleTemplateTypeLabelKey = RoleLabelPrefix + "template-type"
+)
+
+// RBGRoleTemplateType defines supported organization patterns
+type RBGRoleTemplateType string
+
+const (
+	// ComponentsTemplateType represents template is constructed from role.components field
+	ComponentsTemplateType RBGRoleTemplateType = "Components"
+
+	// LeaderWorkerSetTemplateType represents template is constructed from role.leaderWorkerSet field
+	LeaderWorkerSetTemplateType RBGRoleTemplateType = "LeaderWorkerSet"
+
+	// PodTemplateTemplateType represents template is constructed from role.template field
+	PodTemplateTemplateType RBGRoleTemplateType = "PodTemplate"
+)
+
+// LeaderWorkerSet labels and annotations
+const (
+	LeaderWorkerSetPrefix = "leaderworkerset.sigs.k8s.io/"
+
+	// LwsWorkerIndexLabelKey identifies the worker index in LeaderWorkerSet
+	// Value: "0" for leader replica selection
+	LwsWorkerIndexLabelKey = LeaderWorkerSetPrefix + "worker-index"
 )
 
 // InstanceSet labels and annotations
 const (
 	InstanceSetPrefix = "instanceset.workloads.x-k8s.io/"
 
-	// InstanceIDLabelKey is a unique id for Instance and its Pods.
+	// SetInstanceOwnerLabelKey identifies resources belonging to a specific InstanceSet.
+	// This label is used for default selector for InstanceSet.
+	SetInstanceOwnerLabelKey = InstanceSetPrefix + "owner-uid"
+
+	// SetInstanceIDLabelKey is a unique id for Instance and its Pods.
 	// Each Instance and the Pods it owns have the same instance-id.
-	InstanceIDLabelKey = InstanceSetPrefix + "instance-id"
+	SetInstanceIDLabelKey = InstanceSetPrefix + "instance-id"
 
-	// InstanceNameLabelKey is the name of the Instance.
+	// SetInstanceNameLabelKey is the name of the Instance.
 	// Each Instance and the Pods it owns have the same instance-name.
-	InstanceNameLabelKey = InstanceSetPrefix + "instance-name"
+	SetInstanceNameLabelKey = InstanceSetPrefix + "instance-name"
 
-	// InstanceComponentID is a unique id for Instance component and its Pods.
+	// SetInstanceComponentID is a unique id for Instance component and its Pods.
 	// Each Instance component and the Pods it owns have the same instance-component-id.
-	InstanceComponentID = InstanceSetPrefix + "instance-component-id"
+	SetInstanceComponentID = InstanceSetPrefix + "instance-component-id"
 
-	// InstanceComponentName is the name of the Instance component.
+	// SetInstanceComponentName is the name of the Instance component.
 	// Each Instance component and the Pods it owns have the same instance-component-name.
-	InstanceComponentName = InstanceSetPrefix + "instance-component-name"
+	SetInstanceComponentName = InstanceSetPrefix + "instance-component-name"
 
 	// SpecifiedDeleteKey is a label used to mark that the Instance should be deleted.
 	SpecifiedDeleteKey = InstanceSetPrefix + "specified-delete"
+)
+
+// Instance labels and annotations
+const (
+	InstancePrefix = "instance.workloads.x-k8s.io/"
+
+	// InstanceNameLabelKey is the name of the Instance
+	InstanceNameLabelKey = InstancePrefix + "instance-name"
+
+	// InstanceComponentNameKey is the name of the Component
+	InstanceComponentNameKey = InstancePrefix + "component-name"
+
+	// InstanceComponentIDKey is the id of the Component
+	InstanceComponentIDKey = InstancePrefix + "component-id"
 )
 
 const (
@@ -109,10 +229,67 @@ const (
 	RecreateRoleInstanceOnPodRestart RestartPolicyType = "RecreateRoleInstanceOnPodRestart"
 )
 
+// UpdateStrategyType defines strategies for Instances in-place update.
+type UpdateStrategyType string
+
+const (
+	// RecreateUpdateStrategyType indicates that we always delete Instances and create new Instances
+	// during Instances update.
+	RecreateUpdateStrategyType UpdateStrategyType = "Recreate"
+
+	// InPlaceIfPossibleUpdateStrategyType indicates that we try to in-place update Instances instead of
+	// recreating Instances when possible. Currently, all field but size update of Instances spec is allowed.
+	// Size changes to the Instances spec will fall back to ReCreate UpdateStrategyType where Instances will be recreated.
+	// Note that if InPlaceIfPossibleUpdateStrategyType was set, the Pods owned by the Instances will also be updated in-place when possible.
+	// Due to the constraints of the Kubernetes APIServer on Pod update operations, a Pod can only be upgraded in-place when there are changes to its Metadata or Image.
+	// Any other modifications will trigger a rebuild-based upgrade.
+	// InPlaceIfPossibleUpdateStrategyType is the default behavior
+	InPlaceIfPossibleUpdateStrategyType UpdateStrategyType = "InPlaceIfPossible"
+)
+
+type LwsComponentType string
+
+const (
+	LeaderLwsComponentType LwsComponentType = "Leader"
+	WorkerLwsComponentType LwsComponentType = "Worker"
+)
+
 const (
 	DeploymentWorkloadType      string = "apps/v1/Deployment"
 	StatefulSetWorkloadType     string = "apps/v1/StatefulSet"
+	InstanceSetWorkloadType     string = "workloads.x-k8s.io/v1alpha1/InstanceSet"
 	LeaderWorkerSetWorkloadType string = "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet"
+)
+
+// Deprecated environment variable names (replaced by pkg/constants/env.go with RBG_ prefix).
+// Kept here for reference and backward compatibility documentation.
+const (
+	// DeprecatedEnvGroupName was replaced by constants.EnvRBGGroupName ("RBG_GROUP_NAME")
+	DeprecatedEnvGroupName = "GROUP_NAME"
+
+	// DeprecatedEnvRoleName was replaced by constants.EnvRBGRoleName ("RBG_ROLE_NAME")
+	DeprecatedEnvRoleName = "ROLE_NAME"
+
+	// DeprecatedEnvRoleIndex was replaced by constants.EnvRBGRoleIndex ("RBG_ROLE_INDEX")
+	DeprecatedEnvRoleIndex = "ROLE_INDEX"
+
+	// DeprecatedEnvInstanceName was replaced by constants.EnvRBGRoleInstanceName ("RBG_ROLE_INSTANCE_NAME")
+	DeprecatedEnvInstanceName = "INSTANCE_NAME"
+
+	// DeprecatedEnvComponentName was replaced by constants.EnvRBGComponentName ("RBG_COMPONENT_NAME")
+	DeprecatedEnvComponentName = "COMPONENT_NAME"
+
+	// DeprecatedEnvComponentIndex was replaced by constants.EnvRBGComponentIndex ("RBG_COMPONENT_INDEX")
+	DeprecatedEnvComponentIndex = "COMPONENT_INDEX"
+
+	// DeprecatedEnvLwsLeaderAddress was replaced by constants.EnvRBGLeaderAddress ("RBG_LEADER_ADDRESS")
+	DeprecatedEnvLwsLeaderAddress = "LWS_LEADER_ADDRESS"
+
+	// DeprecatedEnvLwsWorkerIndex was replaced by constants.EnvRBGIndex ("RBG_INDEX")
+	DeprecatedEnvLwsWorkerIndex = "LWS_WORKER_INDEX"
+
+	// DeprecatedEnvLwsGroupSize was replaced by constants.EnvRBGSize ("RBG_SIZE")
+	DeprecatedEnvLwsGroupSize = "LWS_GROUP_SIZE"
 )
 
 type AdapterPhase string

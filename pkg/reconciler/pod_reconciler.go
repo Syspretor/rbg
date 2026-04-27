@@ -1,7 +1,24 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -9,18 +26,22 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
+	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/discovery"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 type PodReconciler struct {
-	scheme        *runtime.Scheme
-	client        client.Client
-	injectObjects []string
+	scheme          *runtime.Scheme
+	client          client.Client
+	injectObjects   []string
+	podGroupManager scheduler.PodGroupManager
 }
 
 func NewPodReconciler(scheme *runtime.Scheme, client client.Client) *PodReconciler {
@@ -34,10 +55,16 @@ func (r *PodReconciler) SetInjectors(injectObjects []string) {
 	r.injectObjects = injectObjects
 }
 
+// SetPodGroupManager configures the PodGroupManager used to inject gang-scheduling
+// labels/annotations into pod templates.
+func (r *PodReconciler) SetPodGroupManager(m scheduler.PodGroupManager) {
+	r.podGroupManager = m
+}
+
 func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 	podLabels map[string]string,
 	podTmpls ...corev1.PodTemplateSpec,
 ) (*coreapplyv1.PodTemplateSpecApplyConfiguration, error) {
@@ -45,7 +72,12 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	if len(podTmpls) > 0 {
 		podTemplateSpec = podTmpls[0]
 	} else {
-		podTemplateSpec = *role.Template.DeepCopy()
+		// KEP-8: Resolve role template using shared helper (supports both templateRef and inline template)
+		resolvedTemplate, err := role.GetResolvedTemplate(rbg)
+		if err != nil {
+			return nil, err
+		}
+		podTemplateSpec = resolvedTemplate
 	}
 	podAnnotations := podTemplateSpec.Annotations
 	if podAnnotations == nil {
@@ -54,7 +86,7 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	// inject objects
 	injector := discovery.NewDefaultInjector(r.scheme, r.client)
 	if r.injectObjects == nil {
-		r.injectObjects = []string{"config", "sidecar", "env"}
+		r.injectObjects = []string{"config", "sidecar", "common_env"}
 	}
 	if utils.ContainsString(r.injectObjects, "config") {
 		if err := injector.InjectConfig(ctx, &podTemplateSpec, rbg, role); err != nil {
@@ -67,19 +99,24 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 			return nil, fmt.Errorf("failed to inject sidecar: %w", err)
 		}
 	}
-	if utils.ContainsString(r.injectObjects, "env") {
+	if utils.ContainsString(r.injectObjects, "common_env") {
 		if err := injector.InjectEnv(ctx, &podTemplateSpec, rbg, role); err != nil {
+			return nil, fmt.Errorf("failed to inject env vars: %w", err)
+		}
+	}
+	if utils.ContainsString(r.injectObjects, "lwp_env") {
+		if err := injector.InjectLeaderWorkerSetEnv(ctx, &podTemplateSpec, rbg, role); err != nil {
 			return nil, fmt.Errorf("failed to inject env vars: %w", err)
 		}
 	}
 
 	// Set Exclusive topology
 	if topologyKey, found := rbg.GetExclusiveKey(); found {
-		if podAnnotations[workloadsv1alpha1.DisableExclusiveKeyAnnotationKey] == "" {
-			podAnnotations[workloadsv1alpha1.ExclusiveKeyAnnotationKey] = topologyKey
+		if podAnnotations[constants.DisableExclusiveKeyAnnotationKey] == "" {
+			podAnnotations[constants.GroupExclusiveTopologyKey] = topologyKey
 			uniqueKey := rbg.GenGroupUniqueKey()
 			err := setExclusiveAffinities(
-				&podTemplateSpec, uniqueKey, topologyKey, workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+				&podTemplateSpec, uniqueKey, topologyKey, constants.GroupUniqueHashLabelKey,
 			)
 			if err != nil {
 				return nil, err
@@ -98,7 +135,10 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		return nil, err
 	}
 
-	scheduler.InjectPodGroupProtocol(rbg, podTemplateApplyConfiguration)
+	// Inject gang-scheduling labels/annotations if a PodGroupManager is configured.
+	if r.podGroupManager != nil {
+		r.podGroupManager.InjectPodGroupLabels(rbg, podTemplateApplyConfiguration)
+	}
 
 	podTemplateApplyConfiguration.WithLabels(podLabels).WithAnnotations(podAnnotations)
 	return podTemplateApplyConfiguration, nil
@@ -221,17 +261,12 @@ func objectMetaEqual(meta1, meta2 metav1.ObjectMeta) (bool, error) {
 }
 
 func podSpecEqual(spec1, spec2 corev1.PodSpec) (bool, error) {
-	if len(spec1.Containers) != len(spec2.Containers) {
-		return false, fmt.Errorf("pod template spec containers len not equal")
+	if equal, err := containersEqual(spec1.InitContainers, spec2.InitContainers); !equal {
+		return false, fmt.Errorf("podTemplate initContainers not equal: %s", err.Error())
 	}
 
-	containers1 := sortContainers(spec1.Containers)
-	containers2 := sortContainers(spec2.Containers)
-
-	for i := range containers1 {
-		if equal, err := containerEqual(containers1[i], containers2[i]); !equal {
-			return false, fmt.Errorf("container not equal: %s", err.Error())
-		}
+	if equal, err := containersEqual(spec1.Containers, spec2.Containers); !equal {
+		return false, fmt.Errorf("podTemplate containers not equal: %s", err.Error())
 	}
 
 	if equal, err := volumesEqual(spec1.Volumes, spec2.Volumes); !equal {
@@ -241,95 +276,27 @@ func podSpecEqual(spec1, spec2 corev1.PodSpec) (bool, error) {
 	return true, nil
 }
 
-func containerEqual(c1, c2 corev1.Container) (bool, error) {
-	if c1.Name != c2.Name {
-		return false, fmt.Errorf("container name not equal")
+func containersEqual(containers1, containers2 []corev1.Container) (bool, error) {
+	if len(containers1) != len(containers2) {
+		return false, fmt.Errorf("containers length not equal")
 	}
 
-	if c1.Image != c2.Image {
-		return false, fmt.Errorf("container image not equal")
+	sortedContainers1 := sortContainers(containers1)
+	sortedContainers2 := sortContainers(containers2)
+
+	normalizeByApiServerDefaults := func(c corev1.Container) corev1.Container {
+		c.Env = utils.FilterSystemEnvs(c.Env)
+		p := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{c}}}
+		legacyscheme.Scheme.Default(p)
+		return p.Spec.Containers[0]
 	}
 
-	if !reflect.DeepEqual(c1.Command, c2.Command) {
-		return false, fmt.Errorf("container command not equal")
-	}
-
-	if !reflect.DeepEqual(c1.Args, c2.Args) {
-		return false, fmt.Errorf("container args not equal")
-	}
-
-	if !reflect.DeepEqual(c1.Ports, c2.Ports) {
-		return false, fmt.Errorf("container ports not equal")
-	}
-
-	if !reflect.DeepEqual(c1.Resources, c2.Resources) {
-		return false, fmt.Errorf("container resources not equal")
-	}
-
-	if c1.ImagePullPolicy != "" && c2.ImagePullPolicy != "" && c1.ImagePullPolicy != c2.ImagePullPolicy {
-		return false, fmt.Errorf(
-			"container image pull policy not equal, old: %s, new: %s", c1.ImagePullPolicy, c2.ImagePullPolicy,
-		)
-	}
-
-	if equal, err := envVarsEqual(c1.Env, c2.Env); !equal {
-		return false, fmt.Errorf("env not equal: %s", err.Error())
-	}
-
-	if !reflect.DeepEqual(c1.StartupProbe, c2.StartupProbe) {
-		return false, fmt.Errorf("container startup probe not equal")
-	}
-	if !reflect.DeepEqual(c1.LivenessProbe, c2.LivenessProbe) {
-		return false, fmt.Errorf("container liveness probe not equal")
-	}
-	if !reflect.DeepEqual(c1.ReadinessProbe, c2.ReadinessProbe) {
-		return false, fmt.Errorf("container readiness probe not equal")
-	}
-
-	if equal, err := volumeMountsEqual(c1.VolumeMounts, c2.VolumeMounts); !equal {
-		return false, fmt.Errorf("podTemplate volumes mounts not equal: %s", err.Error())
-	}
-
-	return true, nil
-
-}
-
-func envVarsEqual(env1, env2 []corev1.EnvVar) (bool, error) {
-	env1 = utils.FilterSystemEnvs(env1)
-	env2 = utils.FilterSystemEnvs(env2)
-	if len(env1) != len(env2) {
-		return false, fmt.Errorf("env vars len not equal")
-	}
-
-	sortedEnv1 := make([]corev1.EnvVar, len(env1))
-	sortedEnv2 := make([]corev1.EnvVar, len(env2))
-	copy(sortedEnv1, env1)
-	copy(sortedEnv2, env2)
-
-	// sort by name
-	sort.Slice(
-		sortedEnv1, func(i, j int) bool {
-			return sortedEnv1[i].Name < sortedEnv1[j].Name
-		},
-	)
-	sort.Slice(
-		sortedEnv2, func(i, j int) bool {
-			return sortedEnv2[i].Name < sortedEnv2[j].Name
-		},
-	)
-
-	for i := range sortedEnv1 {
-		if !reflect.DeepEqual(sortedEnv1[i].Value, sortedEnv2[i].Value) {
-			return false, fmt.Errorf(
-				"env vars %s value not equal, old: %v, new: %v", sortedEnv1[i].Name, sortedEnv1[i].Value,
-				sortedEnv2[i].Value,
-			)
-		}
-		if !reflect.DeepEqual(sortedEnv1[i].Name, sortedEnv2[i].Name) {
-			return false, fmt.Errorf("env vars name not equal")
+	for i := range sortedContainers1 {
+		if equal := reflect.DeepEqual(normalizeByApiServerDefaults(sortedContainers1[i]),
+			normalizeByApiServerDefaults(sortedContainers2[i])); !equal {
+			return false, fmt.Errorf("container %s not equal", sortedContainers1[i].Name)
 		}
 	}
-
 	return true, nil
 }
 
@@ -355,10 +322,6 @@ func slicesEqualByName[T any](a, b []T, name func(T) string, itemType string) (b
 
 func volumesEqual(vol1, vol2 []corev1.Volume) (bool, error) {
 	return slicesEqualByName(vol1, vol2, func(v corev1.Volume) string { return v.Name }, "volume")
-}
-
-func volumeMountsEqual(vm1, vm2 []corev1.VolumeMount) (bool, error) {
-	return slicesEqualByName(vm1, vm2, func(m corev1.VolumeMount) string { return m.Name }, "volume mount")
 }
 
 func sortContainers(containers []corev1.Container) []corev1.Container {
@@ -398,4 +361,30 @@ func mapsEqual(map1, map2 map[string]string) bool {
 	}
 
 	return true
+}
+
+// applyStrategicMergePatch applies a strategic merge patch to a PodTemplateSpec.
+// If the patch is nil or empty, returns the base template unchanged.
+// This function is used by both RoleTemplates (KEP-8) and LeaderWorkerSet patches.
+func applyStrategicMergePatch(base corev1.PodTemplateSpec, patch runtime.RawExtension) (corev1.PodTemplateSpec, error) {
+	if len(patch.Raw) == 0 {
+		return base, nil
+	}
+
+	baseBytes, err := json.Marshal(base)
+	if err != nil {
+		return corev1.PodTemplateSpec{}, fmt.Errorf("failed to marshal base template: %w", err)
+	}
+
+	mergedBytes, err := strategicpatch.StrategicMergePatch(baseBytes, patch.Raw, &corev1.PodTemplateSpec{})
+	if err != nil {
+		return corev1.PodTemplateSpec{}, fmt.Errorf("failed to merge patch: %w", err)
+	}
+
+	result := &corev1.PodTemplateSpec{}
+	if err := json.Unmarshal(mergedBytes, result); err != nil {
+		return corev1.PodTemplateSpec{}, fmt.Errorf("failed to unmarshal merged template: %w", err)
+	}
+
+	return *result, nil
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2025 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,13 +20,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/rbgs/cmd/cli/cmd/llm"
 	"sigs.k8s.io/rbgs/cmd/cli/cmd/rollout"
 	"sigs.k8s.io/rbgs/cmd/cli/cmd/status"
 	"sigs.k8s.io/rbgs/version"
@@ -37,7 +37,7 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:               "kubectl rbg [command]",
+	Use:               "rbg [command]",
 	Short:             "Kubectl plugin for RoleBasedGroup",
 	SilenceUsage:      true,
 	DisableAutoGenTag: true,
@@ -53,14 +53,6 @@ func getVersion() string {
 }
 
 func Execute() {
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-
-	go func() {
-		<-sig
-		os.Exit(1)
-	}()
-
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
@@ -81,4 +73,14 @@ func init() {
 
 	rootCmd.AddCommand(status.NewStatusCmd(cf))
 	rootCmd.AddCommand(rollout.NewRolloutCmd(cf))
+	rootCmd.AddCommand(llm.NewLLMCmd(cf))
+
+	// Display "kubectl rbg" instead of "rbg" in usage/help output.
+	// This is the standard approach used by kubectl plugins (e.g. krew).
+	replacer := strings.NewReplacer(
+		"{{.UseLine}}", "kubectl {{.UseLine}}",
+		"{{.CommandPath}}", "kubectl {{.CommandPath}}",
+	)
+	rootCmd.SetUsageTemplate(replacer.Replace(rootCmd.UsageTemplate()))
+	rootCmd.SetHelpTemplate(replacer.Replace(rootCmd.HelpTemplate()))
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2025 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,6 +22,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
+const (
+	DefaultInstanceSetMaxUnavailable = "10%"
+)
+
 // InstanceSetSpec defines the desired state of InstanceSet
 type InstanceSetSpec struct {
 	// Replicas is the desired number of replicas of the given Template.
@@ -30,7 +34,13 @@ type InstanceSetSpec struct {
 	// If unspecified, defaults to 1.
 	Replicas *int32 `json:"replicas,omitempty"`
 
-	// Components describes the Instance components that will be created.
+	// Selector is a label query over instances that should match the replica count.
+	// It must match the instance template's labels.
+	// More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#label-selectors
+	// +optional
+	Selector *metav1.LabelSelector `json:"selector,omitempty"`
+
+	// InstanceTemplate describes the data an instance should have when created from a template
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
 	InstanceTemplate InstanceTemplate `json:"instanceTemplate"`
@@ -56,6 +66,40 @@ type InstanceSetSpec struct {
 	// Defaults to 0 (Instances will be considered available as soon as it is ready)
 	// +optional
 	MinReadySeconds int32 `json:"minReadySeconds,omitempty"`
+
+	// Lifecycle defines the lifecycle hooks for Instances pre-delete, in-place update.
+	Lifecycle *Lifecycle `json:"lifecycle,omitempty"`
+}
+
+const (
+	LifecycleStateKey     = "lifecycle.workloads.x-k8s.io/state"
+	LifecycleTimestampKey = "lifecycle.workloads.x-k8s.io/timestamp"
+
+	LifecycleStateNormal          LifecycleStateType = "Normal"
+	LifecycleStatePreparingUpdate LifecycleStateType = "PreparingUpdate"
+	LifecycleStateUpdating        LifecycleStateType = "Updating"
+	LifecycleStateUpdated         LifecycleStateType = "Updated"
+	LifecycleStatePreparingDelete LifecycleStateType = "PreparingDelete"
+)
+
+type LifecycleStateType string
+
+// Lifecycle contains the hooks for Instance lifecycle.
+type Lifecycle struct {
+	// PreDelete is the hook before Instance to be deleted.
+	PreDelete *LifecycleHook `json:"preDelete,omitempty"`
+	// InPlaceUpdate is the hook before Instance to update and after Instance has been updated.
+	InPlaceUpdate *LifecycleHook `json:"inPlaceUpdate,omitempty"`
+}
+
+type LifecycleHook struct {
+	LabelsHandler     map[string]string `json:"labelsHandler,omitempty"`
+	FinalizersHandler []string          `json:"finalizersHandler,omitempty"`
+	// MarkNotReady = true means:
+	// - Instance will be set to 'NotReady' at preparingDelete/preparingUpdate state.
+	// - Instance will be restored to 'Ready' at Updated state if it was set to 'NotReady' at preparingUpdate state.
+	// Default to false.
+	MarkNotReady bool `json:"markPodNotReady,omitempty"`
 }
 
 // InstanceSetScaleStrategy defines strategies for Instances scale.
@@ -75,7 +119,7 @@ type InstanceSetScaleStrategy struct {
 type InstanceSetUpdateStrategy struct {
 	// Type indicates the type of the InstanceSetUpdateStrategy.
 	// Default is ReCreate.
-	Type InstanceSetUpdateStrategyType `json:"type,omitempty"`
+	Type UpdateStrategyType `json:"type,omitempty"`
 
 	// Partition is the desired number of Instances in old revisions.
 	// Value can be an absolute number (ex: 5) or a percentage of desired Instances (ex: 10%).
@@ -112,23 +156,6 @@ type InPlaceUpdateStrategy struct {
 	GracePeriodSeconds int32 `json:"gracePeriodSeconds,omitempty"`
 }
 
-// InstanceSetUpdateStrategyType defines strategies for Instances in-place update.
-type InstanceSetUpdateStrategyType string
-
-const (
-	// RecreateInstanceSetUpdateStrategyType indicates that we always delete Instances and create new Instances
-	// during Instances update, which is the default behavior.
-	RecreateInstanceSetUpdateStrategyType InstanceSetUpdateStrategyType = "ReCreate"
-
-	// InPlaceIfPossibleInstanceSetUpdateStrategyType indicates that we try to in-place update Instances instead of
-	// recreating Instances when possible. Currently, all field but size update of Instances spec is allowed.
-	// Size changes to the Instances spec will fall back to ReCreate InstanceSetUpdateStrategyType where Instances will be recreated.
-	// Note that if InPlaceIfPossibleInstanceSetUpdateStrategyType was set, the Pods owned by the Instances will also be updated in-place when possible.
-	// Due to the constraints of the Kubernetes APIServer on Pod update operations, a Pod can only be upgraded in-place when there are changes to its Metadata or Image.
-	// Any other modifications will trigger a rebuild-based upgrade.
-	InPlaceIfPossibleInstanceSetUpdateStrategyType InstanceSetUpdateStrategyType = "InPlaceIfPossible"
-)
-
 // InstanceSetStatus defines the observed state of InstanceSet
 type InstanceSetStatus struct {
 	// ObservedGeneration is the most recent generation observed for this InstanceSet. It corresponds to the
@@ -143,6 +170,10 @@ type InstanceSetStatus struct {
 
 	// AvailableReplicas is the number of Instances created by the InstanceSet controller that have a Ready Condition for at least minReadySeconds.
 	AvailableReplicas int32 `json:"availableReplicas"`
+
+	// CurrentReplicas is the number of Instances created by the InstanceSet controller from the InstanceSet version
+	// indicated by currentRevision.
+	CurrentReplicas int32 `json:"currentReplicas"`
 
 	// UpdatedReplicas is the number of Instances created by the InstanceSet controller from the InstanceSet version
 	// indicated by updateRevision.
@@ -207,11 +238,10 @@ type InstanceSetCondition struct {
 // +genclient:method=GetScale,verb=get,subresource=scale,result=k8s.io/api/autoscaling/v1.Scale
 // +genclient:method=UpdateScale,verb=update,subresource=scale,input=k8s.io/api/autoscaling/v1.Scale,result=k8s.io/api/autoscaling/v1.Scale
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-
 // +k8s:openapi-gen=true
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=is,path=instanceset,scope=Namespaced
+// +kubebuilder:resource:shortName=is,path=instancesets,scope=Namespaced
 // +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.labelSelector
 // +kubebuilder:printcolumn:name="DESIRED",type="integer",JSONPath=".spec.replicas",description="The desired number of Instances."
 // +kubebuilder:printcolumn:name="UPDATED",type="integer",JSONPath=".status.updatedReplicas",description="The number of Instances updated."

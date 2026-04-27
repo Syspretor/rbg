@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2026 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -40,7 +40,7 @@ func ClusterEngineRuntimeProfile(name, namespace string) *ClusterEngineRuntimePr
 	b.WithName(name)
 	b.WithNamespace(namespace)
 	b.WithKind("ClusterEngineRuntimeProfile")
-	b.WithAPIVersion("workloads/v1alpha1")
+	b.WithAPIVersion("workloads.x-k8s.io/v1alpha1")
 	return b
 }
 func (b ClusterEngineRuntimeProfileApplyConfiguration) IsApplyConfiguration() {}

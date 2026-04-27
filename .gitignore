@@ -16,18 +16,24 @@ Dockerfile.cross
 # Go workspace file
 go.work
 
+# Go build binary
+main
+
 # Kubernetes Generated files - skip generated files, except for vendored files
 !vendor/**/zz_generated.*
 
 # editor and IDE paraphernalia
 .idea
 .vscode
+.qoder
+.claude
 *.swp
 *.swo
 *~
 .devcontainer
 **/*.tgz
 **/.DS_Store
+.claude/
 
 
 # python

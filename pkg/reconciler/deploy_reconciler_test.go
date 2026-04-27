@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package reconciler
 
 import (
@@ -6,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -18,7 +35,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 var expectedRevisionHash = "revision-hash-value"
@@ -27,29 +45,44 @@ var expectedRevisionHash = "revision-hash-value"
 func TestDeploymentReconciler_Reconciler(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 
-	deployRole := &workloadsv1alpha1.RoleSpec{
+	deployRole := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: ptr.To(int32(3)),
-		Workload: workloadsv1alpha1.WorkloadSpec{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
+		Annotations: map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
+		},
+		Pattern: workloadsv1alpha2.Pattern{
+			StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+				TemplateSource: workloadsv1alpha2.TemplateSource{
+					Template: &corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "test-container",
+									Image: "test-image:v1",
+								},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
 			UID:       "test-uid",
 			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+				constants.GroupNameLabelKey: "test-rbg",
 			},
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				*deployRole,
 			},
 		},
@@ -58,8 +91,8 @@ func TestDeploymentReconciler_Reconciler(t *testing.T) {
 	tests := []struct {
 		name         string
 		client       client.Client
-		rbg          *workloadsv1alpha1.RoleBasedGroup
-		role         *workloadsv1alpha1.RoleSpec
+		rbg          *workloadsv1alpha2.RoleBasedGroup
+		role         *workloadsv1alpha2.RoleSpec
 		expectError  bool
 		expectCreate bool
 		expectUpdate bool
@@ -121,7 +154,7 @@ func TestDeploymentReconciler_Reconciler(t *testing.T) {
 				}
 
 				ctx := context.Background()
-				err := r.Reconciler(ctx, tt.rbg, tt.role, expectedRevisionHash)
+				err := r.Reconciler(ctx, tt.rbg, tt.role, nil, expectedRevisionHash)
 
 				if (err != nil) != tt.expectError {
 					t.Errorf("DeploymentReconciler.Reconciler() error = %v, expectError %v", err, tt.expectError)
@@ -152,7 +185,7 @@ func TestDeploymentReconciler_Reconciler(t *testing.T) {
 						}
 					}
 
-					roleHashKey := fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, tt.role.Name)
+					roleHashKey := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, tt.role.Name)
 					if expectedRevisionHash != deploy.Labels[roleHashKey] {
 						t.Errorf("Expected revision hash %s, got %s",
 							expectedRevisionHash, deploy.Labels[roleHashKey])
@@ -167,28 +200,27 @@ func TestDeploymentReconciler_Reconciler(t *testing.T) {
 func TestDeploymentReconciler_CheckWorkloadReady(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	replicas := int32(3)
-	deployRole := &workloadsv1alpha1.RoleSpec{
+	deployRole := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: &replicas,
-		Workload: workloadsv1alpha1.WorkloadSpec{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
+		Annotations: map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
 		},
 	}
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
 			UID:       "test-uid",
 			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+				constants.GroupNameLabelKey: "test-rbg",
 			},
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				*deployRole,
 			},
 		},
@@ -197,8 +229,8 @@ func TestDeploymentReconciler_CheckWorkloadReady(t *testing.T) {
 	tests := []struct {
 		name        string
 		client      client.Client
-		rbg         *workloadsv1alpha1.RoleBasedGroup
-		role        *workloadsv1alpha1.RoleSpec
+		rbg         *workloadsv1alpha2.RoleBasedGroup
+		role        *workloadsv1alpha2.RoleSpec
 		expected    bool
 		expectError bool
 	}{
@@ -285,28 +317,27 @@ func TestDeploymentReconciler_CheckWorkloadReady(t *testing.T) {
 func TestDeploymentReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	replicas := int32(3)
-	deployRole := &workloadsv1alpha1.RoleSpec{
+	deployRole := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: &replicas,
-		Workload: workloadsv1alpha1.WorkloadSpec{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
+		Annotations: map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
 		},
 	}
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
 			UID:       "test-uid",
 			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+				constants.GroupNameLabelKey: "test-rbg",
 			},
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				*deployRole,
 			},
 		},
@@ -315,7 +346,7 @@ func TestDeploymentReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	tests := []struct {
 		name        string
 		client      client.Client
-		rbg         *workloadsv1alpha1.RoleBasedGroup
+		rbg         *workloadsv1alpha2.RoleBasedGroup
 		expectError bool
 	}{
 		{
@@ -326,11 +357,11 @@ func TestDeploymentReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 						Name:      "orphaned-deploy",
 						Namespace: "default",
 						Labels: map[string]string{
-							workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+							constants.GroupNameLabelKey: "test-rbg",
 						},
 						OwnerReferences: []metav1.OwnerReference{
 							{
-								APIVersion: workloadsv1alpha1.GroupVersion.String(),
+								APIVersion: workloadsv1alpha2.GroupVersion.String(),
 								Kind:       "RoleBasedGroup",
 								Name:       "test-rbg",
 								Controller: ptr.To[bool](true),
@@ -344,11 +375,11 @@ func TestDeploymentReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 						Name:      "test-rbg-test-role",
 						Namespace: "default",
 						Labels: map[string]string{
-							workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+							constants.GroupNameLabelKey: "test-rbg",
 						},
 						OwnerReferences: []metav1.OwnerReference{
 							{
-								APIVersion: workloadsv1alpha1.GroupVersion.String(),
+								APIVersion: workloadsv1alpha2.GroupVersion.String(),
 								Kind:       "RoleBasedGroup",
 								Name:       "test-rbg",
 								UID:        "test-uid",
@@ -371,7 +402,7 @@ func TestDeploymentReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 					},
 				},
 			).Build(),
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-rbg",
 					Namespace: "default",
@@ -407,28 +438,27 @@ func TestDeploymentReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 func TestDeploymentReconciler_RecreateWorkload(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	replicas := int32(1)
-	deployRole := &workloadsv1alpha1.RoleSpec{
+	deployRole := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: &replicas,
-		Workload: workloadsv1alpha1.WorkloadSpec{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
+		Annotations: map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
 		},
 	}
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
 			UID:       "test-uid",
 			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+				constants.GroupNameLabelKey: "test-rbg",
 			},
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				*deployRole,
 			},
 		},
@@ -444,8 +474,8 @@ func TestDeploymentReconciler_RecreateWorkload(t *testing.T) {
 	tests := []struct {
 		name          string
 		client        client.Client
-		rbg           *workloadsv1alpha1.RoleBasedGroup
-		role          *workloadsv1alpha1.RoleSpec
+		rbg           *workloadsv1alpha2.RoleBasedGroup
+		role          *workloadsv1alpha2.RoleSpec
 		mockReconcile bool
 		expectError   bool
 	}{
@@ -460,13 +490,13 @@ func TestDeploymentReconciler_RecreateWorkload(t *testing.T) {
 		{
 			name:   "deployment does not exist",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-rbg",
 					Namespace: "default",
 				},
 			},
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name:     "test-role",
 				Replicas: &replicas,
 			},
@@ -492,13 +522,13 @@ func TestDeploymentReconciler_RecreateWorkload(t *testing.T) {
 					},
 				},
 			).Build(),
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-rbg",
 					Namespace: "default",
 				},
 			},
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name:     "test-role",
 				Replicas: &replicas,
 			},
@@ -509,7 +539,7 @@ func TestDeploymentReconciler_RecreateWorkload(t *testing.T) {
 			name:   "nil rbg",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
 			rbg:    nil,
-			role: &workloadsv1alpha1.RoleSpec{
+			role: &workloadsv1alpha2.RoleSpec{
 				Name:     "test-role",
 				Replicas: &replicas,
 			},
@@ -519,7 +549,7 @@ func TestDeploymentReconciler_RecreateWorkload(t *testing.T) {
 		{
 			name:   "nil role",
 			client: fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg: &workloadsv1alpha1.RoleBasedGroup{
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-rbg",
 					Namespace: "default",
@@ -575,29 +605,44 @@ func TestDeploymentReconciler_RecreateWorkload(t *testing.T) {
 func TestDeploymentReconciler_constructDeployApplyConfiguration(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 
 	replicas := int32(1)
-	deployRole := &workloadsv1alpha1.RoleSpec{
+	deployRole := &workloadsv1alpha2.RoleSpec{
 		Name:     "test-role",
 		Replicas: &replicas,
-		Workload: workloadsv1alpha1.WorkloadSpec{
-			APIVersion: "apps/v1",
-			Kind:       "Deployment",
+		Annotations: map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
+		},
+		Pattern: workloadsv1alpha2.Pattern{
+			StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+				TemplateSource: workloadsv1alpha2.TemplateSource{
+					Template: &corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "test-container",
+									Image: "test-image:v1",
+								},
+							},
+						},
+					},
+				},
+			},
 		},
 	}
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
 			UID:       "test-uid",
 			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+				constants.GroupNameLabelKey: "test-rbg",
 			},
 		},
-		Spec: workloadsv1alpha1.RoleBasedGroupSpec{
-			Roles: []workloadsv1alpha1.RoleSpec{
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
 				*deployRole,
 			},
 		},
@@ -605,8 +650,8 @@ func TestDeploymentReconciler_constructDeployApplyConfiguration(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		rbg         *workloadsv1alpha1.RoleBasedGroup
-		role        *workloadsv1alpha1.RoleSpec
+		rbg         *workloadsv1alpha2.RoleBasedGroup
+		role        *workloadsv1alpha2.RoleSpec
 		oldDeploy   *appsv1.Deployment
 		expectError bool
 	}{
@@ -627,7 +672,7 @@ func TestDeploymentReconciler_constructDeployApplyConfiguration(t *testing.T) {
 					Name:      "test-rbg-test-role",
 					Namespace: "rbg",
 					Labels: map[string]string{
-						workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+						constants.GroupNameLabelKey: "test-rbg",
 					},
 				},
 				Spec: appsv1.DeploymentSpec{
@@ -652,7 +697,7 @@ func TestDeploymentReconciler_constructDeployApplyConfiguration(t *testing.T) {
 				}
 
 				ctx := context.Background()
-				_, err := r.constructDeployApplyConfiguration(ctx, tt.rbg, tt.role, tt.oldDeploy, "revision-key")
+				_, err := r.constructDeployApplyConfiguration(ctx, tt.rbg, tt.role, tt.oldDeploy, nil, "revision-key")
 
 				if (err != nil) != tt.expectError {
 					t.Errorf(
@@ -662,5 +707,166 @@ func TestDeploymentReconciler_constructDeployApplyConfiguration(t *testing.T) {
 				}
 			},
 		)
+	}
+}
+
+func TestConstructDeploymentApplyConfiguration_LabelsAndAnnotations(t *testing.T) {
+	role := &workloadsv1alpha2.RoleSpec{
+		Name:     "test-role",
+		Replicas: ptr.To(int32(3)),
+		Annotations: map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
+		},
+		Pattern: workloadsv1alpha2.Pattern{
+			StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+				TemplateSource: workloadsv1alpha2.TemplateSource{
+					Template: &corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "test-container",
+									Image: "test-image:v1",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg",
+			Namespace: "default",
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{*role},
+		},
+	}
+
+	tests := []struct {
+		name                string
+		roleLabels          map[string]string
+		roleAnnotations     map[string]string
+		expectedLabels      map[string]string
+		expectedAnnotations map[string]string
+	}{
+		{
+			name: "test role labels and annotations",
+			roleLabels: map[string]string{
+				"app":          "my-app",
+				"version":      "v1.0",
+				"custom-label": "role-value",
+			},
+			expectedLabels: map[string]string{
+				"app":                       "my-app",
+				"version":                   "v1.0",
+				"custom-label":              "role-value",
+				constants.RoleNameLabelKey:  role.Name,
+				constants.GroupNameLabelKey: rbg.Name,
+				constants.GroupUIDLabelKey:  rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+			},
+			roleAnnotations: map[string]string{
+				"description":       "custom description",
+				"custom-annotation": "role-value",
+			},
+			expectedAnnotations: map[string]string{
+				"description":                   "custom description",
+				"custom-annotation":             "role-value",
+				constants.RoleSizeAnnotationKey: "3",
+			},
+		},
+		{
+			name: "test role labels and annotations with priority",
+			roleLabels: map[string]string{
+				"app":                       "my-app",
+				"version":                   "v1.0",
+				"custom-label":              "role-value",
+				constants.RoleNameLabelKey:  "custom",
+				constants.GroupNameLabelKey: "custom",
+				constants.GroupUIDLabelKey:  "custom",
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): "custom",
+			},
+			expectedLabels: map[string]string{
+				"app":                       "my-app",
+				"version":                   "v1.0",
+				"custom-label":              "role-value",
+				constants.RoleNameLabelKey:  role.Name,
+				constants.GroupNameLabelKey: rbg.Name,
+				constants.GroupUIDLabelKey:  rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+			},
+			roleAnnotations: map[string]string{
+				"description":                   "custom description",
+				"custom-annotation":             "role-value",
+				constants.RoleSizeAnnotationKey: "custom",
+			},
+			expectedAnnotations: map[string]string{
+				"description":                   "custom description",
+				"custom-annotation":             "role-value",
+				constants.RoleSizeAnnotationKey: "3",
+			},
+		},
+		{
+			name:            "no role labels or annotations",
+			roleLabels:      nil,
+			roleAnnotations: nil,
+			expectedLabels: map[string]string{
+				constants.RoleNameLabelKey:                                role.Name,
+				constants.GroupNameLabelKey:                               rbg.Name,
+				constants.GroupUIDLabelKey:                                rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+			},
+			expectedAnnotations: map[string]string{
+				constants.RoleSizeAnnotationKey: "3",
+			},
+		},
+		{
+			name:            "empty role labels and annotations",
+			roleLabels:      map[string]string{},
+			roleAnnotations: map[string]string{},
+			expectedLabels: map[string]string{
+				constants.RoleNameLabelKey:                                role.Name,
+				constants.GroupNameLabelKey:                               rbg.Name,
+				constants.GroupUIDLabelKey:                                rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+			},
+			expectedAnnotations: map[string]string{
+				constants.RoleSizeAnnotationKey: "3",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			_ = appsv1.AddToScheme(scheme)
+			_ = corev1.AddToScheme(scheme)
+			_ = workloadsv1alpha2.AddToScheme(scheme)
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			reconciler := NewDeploymentReconciler(scheme, fakeClient)
+
+			role.Labels = tt.roleLabels
+			role.Annotations = tt.roleAnnotations
+
+			result, err := reconciler.constructDeployApplyConfiguration(
+				context.Background(),
+				rbg,
+				role,
+				&appsv1.Deployment{},
+				nil,
+				expectedRevisionHash,
+			)
+
+			if err != nil {
+				t.Fatalf("constructDeployApplyConfiguration() error = %v", err)
+			}
+
+			assert.Equal(t, tt.expectedLabels, result.Labels)
+			assert.Equal(t, tt.expectedAnnotations, result.Annotations)
+		})
 	}
 }

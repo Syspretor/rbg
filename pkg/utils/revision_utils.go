@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package utils
 
 import (
@@ -20,7 +36,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 const (
@@ -82,8 +99,8 @@ func EqualRevision(lhs, rhs *appsv1.ControllerRevision) bool {
 // Note: The ControllerRevision does not store the actual Role replica counts. After deserialization, the replica counts from the current RBG Roles are used.
 // If a Role from the historical ControllerRevision does not exist in the current RBG, its replica count will default to 1.
 func ApplyRevision(
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	revision *appsv1.ControllerRevision) (*workloadsv1alpha1.RoleBasedGroup, error) {
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	revision *appsv1.ControllerRevision) (*workloadsv1alpha2.RoleBasedGroup, error) {
 	currentRolesReplicas := make(map[string]int32)
 	for _, role := range rbg.Spec.Roles {
 		currentRolesReplicas[role.Name] = *role.Replicas
@@ -97,7 +114,7 @@ func ApplyRevision(
 	if err != nil {
 		return nil, err
 	}
-	restoredRbg := &workloadsv1alpha1.RoleBasedGroup{}
+	restoredRbg := &workloadsv1alpha2.RoleBasedGroup{}
 	if err = json.Unmarshal(patched, restoredRbg); err != nil {
 		return nil, err
 	}
@@ -115,10 +132,10 @@ func ApplyRevision(
 
 func CleanExpiredRevision(
 	ctx context.Context, client client.Client,
-	rbg *workloadsv1alpha1.RoleBasedGroup) ([]*appsv1.ControllerRevision, error) {
+	rbg *workloadsv1alpha2.RoleBasedGroup) ([]*appsv1.ControllerRevision, error) {
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
 		MatchLabels: map[string]string{
-			workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+			constants.GroupNameLabelKey: rbg.Name,
 		},
 	})
 	if err != nil {
@@ -159,7 +176,7 @@ func CleanExpiredRevision(
 }
 
 func NewRevision(ctx context.Context, client client.Client,
-	rbg *workloadsv1alpha1.RoleBasedGroup, currentRevision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
+	rbg *workloadsv1alpha2.RoleBasedGroup, currentRevision *appsv1.ControllerRevision) (*appsv1.ControllerRevision, error) {
 	revision := int64(1)
 	if currentRevision != nil {
 		revision = currentRevision.Revision + 1
@@ -174,7 +191,7 @@ func NewRevision(ctx context.Context, client client.Client,
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: rbg.Namespace,
 			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+				constants.GroupNameLabelKey: rbg.Name,
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				*metav1.NewControllerRef(rbg, rbg.GroupVersionKind()),
@@ -190,7 +207,7 @@ func NewRevision(ctx context.Context, client client.Client,
 	if err != nil {
 		return nil, err
 	}
-	cr.Labels[workloadsv1alpha1.RevisionLabelKey] = rgbHash
+	cr.Labels[constants.GroupRevisionLabelKey] = rgbHash
 	cr.Name = revisionName(rbg.Name, rgbHash, revision)
 	return cr, nil
 }
@@ -229,6 +246,30 @@ func GetRolesRevisionHash(revision *appsv1.ControllerRevision) (map[string]strin
 		return nil, fmt.Errorf("roles not found or wrong type")
 	}
 
+	templateLookup := make(map[string]map[string]interface{})
+	if rawTemplates, ok := spec["roleTemplates"]; ok {
+		templateSlice, ok := rawTemplates.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("roleTemplates not found or wrong type")
+		}
+
+		for _, t := range templateSlice {
+			templateMap, ok := t.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("invalid roleTemplate structure")
+			}
+			if patch, ok := templateMap["$patch"].(string); ok && patch == "replace" {
+				continue
+			}
+
+			nameVal, ok := templateMap["name"].(string)
+			if !ok || nameVal == "" {
+				return nil, fmt.Errorf("roleTemplate missing name field")
+			}
+			templateLookup[nameVal] = templateMap
+		}
+	}
+
 	for _, r := range roles {
 		roleMap, ok := r.(map[string]interface{})
 		if !ok {
@@ -251,6 +292,37 @@ func GetRolesRevisionHash(revision *appsv1.ControllerRevision) (map[string]strin
 		if len(roleBytes) > 0 {
 			hf.Write(roleBytes)
 		}
+
+		// Look for templateRef in v1alpha2 paths (Pattern and TemplateSource are inline):
+		// - standalonePattern.templateRef
+		// - leaderWorkerPattern.templateRef
+		var templateRef map[string]interface{}
+		if sp, ok := roleMap["standalonePattern"].(map[string]interface{}); ok {
+			templateRef, _ = sp["templateRef"].(map[string]interface{})
+		}
+		if templateRef == nil {
+			if lw, ok := roleMap["leaderWorkerPattern"].(map[string]interface{}); ok {
+				templateRef, _ = lw["templateRef"].(map[string]interface{})
+			}
+		}
+
+		if templateRef != nil {
+			if templateName, ok := templateRef["name"].(string); ok && templateName != "" {
+				template, found := templateLookup[templateName]
+				if !found {
+					return nil, fmt.Errorf("role references unknown roleTemplate %q", templateName)
+				}
+
+				if templateSpec, ok := template["template"]; ok {
+					templateBytes, err := json.Marshal(templateSpec)
+					if err != nil {
+						return nil, fmt.Errorf("failed to marshal roleTemplate %q: %w", templateName, err)
+					}
+					hf.Write(templateBytes)
+				}
+			}
+		}
+
 		result[nameVal] = rand.SafeEncodeString(fmt.Sprint(hf.Sum32()))
 	}
 
@@ -261,7 +333,7 @@ func GetRolesRevisionHash(revision *appsv1.ControllerRevision) (map[string]strin
 // previous version.
 // Note: This approach creates a copy of the original RBG object before performing the serialization.
 // In the serialized output, the replica count for each role will be set to the default value of 1.
-func getRBGPatch(rbg *workloadsv1alpha1.RoleBasedGroup) ([]byte, error) {
+func getRBGPatch(rbg *workloadsv1alpha2.RoleBasedGroup) ([]byte, error) {
 	clone := rbg.DeepCopy()
 	for i := range clone.Spec.Roles {
 		clone.Spec.Roles[i].Replicas = nil
@@ -288,6 +360,15 @@ func getRBGPatch(rbg *workloadsv1alpha1.RoleBasedGroup) ([]byte, error) {
 	rolesPatch = append(rolesPatch, roles...)
 
 	specCopy["roles"] = rolesPatch
+
+	roleTemplatesPatch := []interface{}{
+		map[string]interface{}{"$patch": "replace"},
+	}
+	if roleTemplates, ok := spec["roleTemplates"].([]interface{}); ok {
+		roleTemplatesPatch = append(roleTemplatesPatch, roleTemplates...)
+	}
+	specCopy["roleTemplates"] = roleTemplatesPatch
+
 	objCopy["spec"] = specCopy
 
 	return json.Marshal(objCopy)

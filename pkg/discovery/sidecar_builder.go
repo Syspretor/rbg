@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package discovery
 
 import (
@@ -8,18 +24,18 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 type SidecarBuilder struct {
-	rbg    *workloadsv1alpha.RoleBasedGroup
-	role   *workloadsv1alpha.RoleSpec
+	rbg    *workloadsv1alpha2.RoleBasedGroup
+	role   *workloadsv1alpha2.RoleSpec
 	client client.Client
 }
 
 func NewSidecarBuilder(
-	k8sClient client.Client, rbg *workloadsv1alpha.RoleBasedGroup, role *workloadsv1alpha.RoleSpec,
+	k8sClient client.Client, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 ) *SidecarBuilder {
 	return &SidecarBuilder{
 		rbg:    rbg,
@@ -52,11 +68,12 @@ func (b *SidecarBuilder) Build(ctx context.Context, podSpec *v1.PodTemplateSpec)
 
 func (b *SidecarBuilder) injectRuntime(
 	ctx context.Context, podSpec *v1.PodTemplateSpec,
-	runtime workloadsv1alpha.EngineRuntime,
+	runtime workloadsv1alpha2.EngineRuntime,
 ) error {
 	logger := log.FromContext(ctx)
 
-	engineRuntime := &workloadsv1alpha.ClusterEngineRuntimeProfile{}
+	// ClusterEngineRuntimeProfile is now in v1alpha2
+	engineRuntime := &workloadsv1alpha2.ClusterEngineRuntimeProfile{}
 	if err := b.client.Get(
 		ctx, types.NamespacedName{
 			Name: runtime.ProfileName,
