@@ -1,0 +1,79 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	"github.com/onsi/ginkgo/v2"
+	"github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
+	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/test/e2e/framework"
+	"sigs.k8s.io/rbgs/test/utils"
+	wrappers "sigs.k8s.io/rbgs/test/wrappers/v1alpha1"
+)
+
+func RunStatefulSetWorkloadTestCases(f *framework.Framework) {
+	ginkgo.It("update sts role.replicas & role.Template", func() {
+		rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).Obj()
+
+		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
+		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
+		f.ExpectRbgEqual(rbg)
+
+		// update
+		updateLabel := map[string]string{"update-label": "new"}
+		utils.UpdateRbg(f.Ctx, f.Client, rbg, func(rbg *workloadsv1alpha1.RoleBasedGroup) {
+			// update
+			rbg.Spec.Roles[0].Replicas = ptr.To(*rbg.Spec.Roles[0].Replicas + 1)
+			rbg.Spec.Roles[0].TemplateSource.Template.Labels = updateLabel
+		})
+		f.ExpectRbgEqual(rbg)
+
+		f.ExpectWorkloadPodTemplateLabelContains(rbg, rbg.Spec.Roles[0], updateLabel)
+	})
+
+	//nolint:dupl
+	ginkgo.It("sts with rollingUpdate", func() {
+		rbg := wrappers.BuildBasicRoleBasedGroup("e2e-test", f.Namespace).WithRoles(
+			[]workloadsv1alpha1.RoleSpec{
+				wrappers.BuildBasicRole("role-1").
+					WithReplicas(2).
+					WithWorkload(workloadsv1alpha1.StatefulSetWorkloadType).
+					WithRollingUpdate(workloadsv1alpha1.RollingUpdate{
+						MaxUnavailable: ptr.To(intstr.FromInt32(1)),
+						MaxSurge:       ptr.To(intstr.FromInt32(1)),
+					}).Obj(),
+			}).Obj()
+
+		ginkgo.DeferCleanup(func() { dumpDebugInfo(f, rbg) })
+
+		gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
+		f.ExpectRbgEqual(rbg)
+
+		// update, start rolling update
+		updateLabel := map[string]string{"update-label": "new"}
+		utils.UpdateRbg(f.Ctx, f.Client, rbg, func(rbg *workloadsv1alpha1.RoleBasedGroup) {
+			rbg.Spec.Roles[0].TemplateSource.Template.Labels = updateLabel
+		})
+		f.ExpectRbgEqual(rbg)
+
+		f.ExpectWorkloadPodTemplateLabelContains(rbg, rbg.Spec.Roles[0], updateLabel)
+	})
+
+}

@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package dependency
 
 import (
@@ -8,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	workloadsv1alpha "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
@@ -25,8 +41,8 @@ func NewDefaultDependencyManager(scheme *runtime.Scheme, client client.Client) *
 }
 
 func (m *DefaultDependencyManager) SortRoles(
-	ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup,
-) ([][]*workloadsv1alpha.RoleSpec, error) {
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup,
+) ([][]*workloadsv1alpha2.RoleSpec, error) {
 	logger := log.FromContext(ctx)
 	if len(rbg.Spec.Roles) == 0 {
 		logger.Info("warning: rbg has no roles, skip")
@@ -59,9 +75,9 @@ func (m *DefaultDependencyManager) SortRoles(
 	}
 	logger.V(1).Info("roleOrder", "roleOrder", roleOrder)
 
-	ret := make([][]*workloadsv1alpha.RoleSpec, len(roleOrder))
+	ret := make([][]*workloadsv1alpha2.RoleSpec, len(roleOrder))
 	for order, roles := range roleOrder {
-		ret[order] = make([]*workloadsv1alpha.RoleSpec, 0, len(roles))
+		ret[order] = make([]*workloadsv1alpha2.RoleSpec, 0, len(roles))
 		for _, roleName := range roles {
 			for i := range rbg.Spec.Roles {
 				if rbg.Spec.Roles[i].Name == roleName {
@@ -76,7 +92,7 @@ func (m *DefaultDependencyManager) SortRoles(
 }
 
 func (m *DefaultDependencyManager) CheckDependencyReady(
-	ctx context.Context, rbg *workloadsv1alpha.RoleBasedGroup, role *workloadsv1alpha.RoleSpec,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 ) (bool, error) {
 
 	for _, dep := range role.Dependencies {
@@ -84,7 +100,7 @@ func (m *DefaultDependencyManager) CheckDependencyReady(
 		if err != nil {
 			return false, err
 		}
-		r, err := reconciler.NewWorkloadReconciler(depRole.Workload, m.scheme, m.client)
+		r, err := reconciler.NewWorkloadReconciler(depRole.GetWorkloadSpec(), m.scheme, m.client)
 		if err != nil {
 			return false, err
 		}

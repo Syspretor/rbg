@@ -1,0 +1,240 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package core
+
+import (
+	"encoding/json"
+	"fmt"
+
+	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/klog/v2"
+	kubecontroller "k8s.io/kubernetes/pkg/controller"
+
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	inplaceupdatepod "sigs.k8s.io/rbgs/pkg/inplace/pod"
+	podinplaceupdate "sigs.k8s.io/rbgs/pkg/inplace/pod/inplaceupdate"
+	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
+)
+
+const (
+	directiveMarker                = "$patch"
+	replaceDirective               = "replace"
+	setElementOrderDirectivePrefix = "$setElementOrder"
+)
+
+var (
+	componentSpecIgnoreRevisionKeys = sets.NewString("size")
+	componentSpecRetainRevisionKeys = sets.NewString("serviceName")
+)
+
+type Control interface {
+	SetRevisionTemplate(revisionSpec map[string]interface{}, componentTemplates []interface{})
+	ApplyRevisionPatch(patched []byte) (*workloadsv1alpha2.RoleInstance, error)
+
+	GetComponentsTopology(pods []*v1.Pod) (*ComponentsTopology, error)
+	NewUpdatePods(updateVersion string, componentName string, availableIDs []int32) ([]*v1.Pod, error)
+
+	GetUpdateOptions() *podinplaceupdate.UpdateOptions
+	IsPodUpdateReady(pod *v1.Pod, minReadySeconds int32) bool
+}
+
+func New(instance *workloadsv1alpha2.RoleInstance) Control {
+	return &commonControl{
+		RoleInstance: instance,
+	}
+}
+
+type commonControl struct {
+	*workloadsv1alpha2.RoleInstance
+}
+
+func (c *commonControl) SetRevisionTemplate(revisionSpec map[string]interface{}, componentTemplates []interface{}) {
+	elementOrders := make([]map[string]interface{}, len(componentTemplates))
+	for i := range componentTemplates {
+		componentTemplate := componentTemplates[i].(map[string]interface{})
+		elementOrders[i] = map[string]interface{}{
+			"name": componentTemplate["name"],
+		}
+		for retainKey := range componentSpecRetainRevisionKeys {
+			if _, ok := componentTemplate[retainKey]; !ok {
+				componentTemplate[retainKey] = nil
+			}
+		}
+		for ignoreKey := range componentSpecIgnoreRevisionKeys {
+			delete(componentTemplate, ignoreKey)
+		}
+		template := componentTemplate["template"].(map[string]interface{})
+		template[directiveMarker] = replaceDirective
+	}
+	revisionSpec[setElementOrderDirectivePrefix+"/"+"components"] = elementOrders
+	revisionSpec["components"] = componentTemplates
+}
+
+func (c *commonControl) ApplyRevisionPatch(patched []byte) (*workloadsv1alpha2.RoleInstance, error) {
+	restoreInstance := new(workloadsv1alpha2.RoleInstance)
+	if err := json.Unmarshal(patched, restoreInstance); err != nil {
+		return nil, err
+	}
+	return restoreInstance, nil
+}
+
+func (c *commonControl) GetComponentsTopology(pods []*v1.Pod) (*ComponentsTopology, error) {
+	ct := &ComponentsTopology{
+		Components: sets.New[string](),
+	}
+	componentGroup := instanceutil.GroupPodsByComponentName(pods)
+	for i := range c.RoleInstance.Spec.Components {
+		component := c.RoleInstance.Spec.Components[i]
+		if component.Size == nil {
+			return nil, fmt.Errorf("component %s'size is empty", component.Name)
+		}
+		ct.Components.Insert(component.Name)
+		ct.Topologies = append(ct.Topologies, newComponentPodGroup(&component, componentGroup[component.Name]))
+	}
+	if ct.Components.Len() != len(ct.Topologies) {
+		return nil, fmt.Errorf("the name of component must be unique")
+	}
+	return ct, nil
+}
+
+func (c *commonControl) NewUpdatePods(updateVersion string, componentName string, availableIDs []int32) ([]*v1.Pod, error) {
+	var component *workloadsv1alpha2.RoleInstanceComponent
+	for i := range c.RoleInstance.Spec.Components {
+		if c.Spec.Components[i].Name == componentName {
+			component = &c.Spec.Components[i]
+			break
+		}
+	}
+	instance := c.RoleInstance
+	newPods := make([]*v1.Pod, 0, len(availableIDs))
+	for _, id := range availableIDs {
+		pod, _ := kubecontroller.GetPodFromTemplate(&component.Template, instance,
+			metav1.NewControllerRef(instance, instanceutil.ControllerKind))
+
+		// 1. init pod's object key
+		pod.Name = instanceutil.FormatComponentPodName(instance.Name, componentName, id,
+			instance.GetRoleTemplateType())
+		pod.Namespace = instance.Namespace
+
+		// 2. init pod revision hash
+		instanceutil.WriteRevisionHash(pod, updateVersion)
+
+		// 3. init pod labels
+		componentPodLabels := instanceutil.InitComponentPodLabels(instance.Name, componentName, id, instance.GetRoleTemplateType())
+		for key, value := range componentPodLabels {
+			pod.Labels[key] = value
+		}
+
+		// 4. init pod identity for service discovery
+		c.setComponentPodIdentity(component, pod)
+
+		// 5. init pod readiness gates
+		inplaceupdatepod.InjectInPlaceReadinessGate(pod)
+		inplaceupdatepod.InjectInstancePodReadinessGate(pod)
+		newPods = append(newPods, pod)
+	}
+	return newPods, nil
+}
+
+func (c *commonControl) setComponentPodIdentity(component *workloadsv1alpha2.RoleInstanceComponent, pod *v1.Pod) {
+	if len(component.ServiceName) == 0 {
+		return
+	}
+	pod.Spec.Hostname = pod.Name
+	pod.Spec.Subdomain = component.ServiceName
+}
+
+func (c *commonControl) GetUpdateOptions() *podinplaceupdate.UpdateOptions {
+	opts := &podinplaceupdate.UpdateOptions{}
+	podinplaceupdate.SetOptionsDefaults(opts)
+	return opts
+}
+
+func (c *commonControl) IsPodUpdateReady(pod *v1.Pod, minReadySeconds int32) bool {
+	if !instanceutil.IsRunningAndAvailable(pod, minReadySeconds) {
+		return false
+	}
+	condition := inplaceupdatepod.GetInPlaceCondition(pod)
+	if condition != nil && condition.Status != v1.ConditionTrue {
+		return false
+	}
+	return true
+}
+
+type ComponentsTopology struct {
+	Components sets.Set[string]
+	Topologies []ComponentPodGroup
+}
+
+type ComponentPodGroup struct {
+	*workloadsv1alpha2.RoleInstanceComponent
+
+	DesiredReplicas int32
+	ExistIDs        sets.Set[int32]
+	ToDeleteIDs     sets.Set[int32]
+	ToScaleIDs      sets.Set[int32]
+
+	ToDeletePod []*v1.Pod
+	Pods        []*v1.Pod
+}
+
+func newComponentPodGroup(component *workloadsv1alpha2.RoleInstanceComponent, pods []*v1.Pod) ComponentPodGroup {
+	desiredReplicas := *component.Size
+	var existIDs, toDeleteIDs, toScaleIDs = sets.New[int32](), sets.New[int32](), sets.New[int32]()
+	for _, pod := range pods {
+		componentID := instanceutil.GetPodComponentID(pod)
+		// Skip pods with invalid component IDs (-1 indicates parse failure)
+		// This prevents malformed labels/names from causing ID collisions
+		if componentID == -1 {
+			klog.Warningf("Pod %s has invalid component ID (label or name parsing failed), skipping", pod.Name)
+			continue
+		}
+		existIDs.Insert(componentID)
+	}
+	for id := range existIDs {
+		if id >= desiredReplicas {
+			toDeleteIDs.Insert(id)
+		}
+	}
+	var toDeletePods []*v1.Pod
+	for _, pod := range pods {
+		componentID := instanceutil.GetPodComponentID(pod)
+		// Delete pods with invalid component IDs (malformed labels/names)
+		// Also delete pods with IDs exceeding desired replicas
+		if componentID == -1 || toDeleteIDs.Has(componentID) {
+			toDeletePods = append(toDeletePods, pod)
+		}
+	}
+	for i := 0; i < int(desiredReplicas); i++ {
+		if existIDs.Has(int32(i)) {
+			continue
+		}
+		toScaleIDs.Insert(int32(i))
+	}
+	podTopology := ComponentPodGroup{
+		RoleInstanceComponent: component,
+		DesiredReplicas:       desiredReplicas,
+		Pods:                  pods,
+		ExistIDs:              existIDs,
+		ToDeleteIDs:           toDeleteIDs,
+		ToScaleIDs:            toScaleIDs,
+		ToDeletePod:           toDeletePods,
+	}
+	return podTopology
+}

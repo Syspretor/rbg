@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2026 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,6 +32,14 @@ type InstanceListerExpansion interface{}
 // InstanceNamespaceListerExpansion allows custom methods to be added to
 // InstanceNamespaceLister.
 type InstanceNamespaceListerExpansion interface{}
+
+// InstanceSetListerExpansion allows custom methods to be added to
+// InstanceSetLister.
+type InstanceSetListerExpansion interface{}
+
+// InstanceSetNamespaceListerExpansion allows custom methods to be added to
+// InstanceSetNamespaceLister.
+type InstanceSetNamespaceListerExpansion interface{}
 
 // RoleBasedGroupListerExpansion allows custom methods to be added to
 // RoleBasedGroupLister.

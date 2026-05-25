@@ -20,7 +20,7 @@ resources:
 - ../manager
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml
-#- ../webhook
+- ../webhook
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'. 'WEBHOOK' components are required.
 #- ../certmanager
 # [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
@@ -32,6 +32,10 @@ resources:
 # Only CR(s) which requires webhooks and are applied on namespaces labeled with 'webhooks: enabled' will
 # be able to communicate with the Webhook Server.
 #- ../network-policy
+
+# Kustomize configurations for name/namespace substitution
+configurations:
+- kustomizeconfig.yaml
 
 
 # Uncomment the patches line if you enable Metrics and CertManager
@@ -46,6 +50,39 @@ resources:
 #- path: manager_webhook_patch.yaml
 #  target:
 #    kind: Deployment
+
+# [WEBHOOK] Propagate the final (namePrefix-applied) webhook Service name and namespace
+# into the controller Deployment args so the self-signed cert SAN matches the Service DNS name.
+# This is required because Kustomize namePrefix/namespace transforms do NOT rewrite args strings.
+# replacements:
+# - source:
+#     kind: Service
+#     version: v1
+#     name: webhook-service   # Kustomize will resolve this to rbgs-webhook-service at render time
+#     fieldPath: metadata.name
+#   targets:
+#   - select:
+#       kind: Deployment
+#       name: rbgs-controller-manager
+#     fieldPaths:
+#     - spec.template.spec.containers.[name=rbgs].args.3
+#     options:
+#       delimiter: '='
+#       index: 1
+# - source:
+#     kind: Service
+#     version: v1
+#     name: webhook-service
+#     fieldPath: metadata.namespace
+#   targets:
+#   - select:
+#       kind: Deployment
+#       name: rbgs-controller-manager
+#     fieldPaths:
+#     - spec.template.spec.containers.[name=rbgs].args.4
+#     options:
+#       delimiter: '='
+#       index: 1
 
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER' prefix.
 # Uncomment the following replacements to add the cert-manager CA injection annotations
@@ -68,7 +105,7 @@ resources:
 #         delimiter: '.'
 #         index: 0
 #         create: true
-#     - select: # Uncomment the following to set the Service name for TLS config in Prometheus ServiceMonitor
+#     - select:  # Uncomment the following to set the Service name for TLS config in Prometheus ServiceMonitor
 #         kind: ServiceMonitor
 #         group: monitoring.coreos.com
 #         version: v1
@@ -98,7 +135,7 @@ resources:
 #         delimiter: '.'
 #         index: 1
 #         create: true
-#     - select: # Uncomment the following to set the Service namespace for TLS in Prometheus ServiceMonitor
+#     - select:  # Uncomment the following to set the Service namespace for TLS in Prometheus ServiceMonitor
 #         kind: ServiceMonitor
 #         group: monitoring.coreos.com
 #         version: v1
@@ -110,7 +147,7 @@ resources:
 #         index: 1
 #         create: true
 #
-# - source: # Uncomment the following block if you have any webhook
+# - source:  # Uncomment the following block if you have any webhook
 #     kind: Service
 #     version: v1
 #     name: webhook-service
@@ -147,7 +184,7 @@ resources:
 #         index: 1
 #         create: true
 #
-# - source: # Uncomment the following block if you have a ValidatingWebhook (--programmatic-validation)
+# - source:  # Uncomment the following block if you have a ValidatingWebhook (--programmatic-validation)
 #     kind: Certificate
 #     group: cert-manager.io
 #     version: v1
@@ -178,7 +215,7 @@ resources:
 #         index: 1
 #         create: true
 #
-# - source: # Uncomment the following block if you have a DefaultingWebhook (--defaulting )
+# - source:  # Uncomment the following block if you have a DefaultingWebhook (--defaulting )
 #     kind: Certificate
 #     group: cert-manager.io
 #     version: v1
@@ -209,13 +246,13 @@ resources:
 #         index: 1
 #         create: true
 #
-# - source: # Uncomment the following block if you have a ConversionWebhook (--conversion)
+# - source:  # Uncomment the following block if you have a ConversionWebhook (--conversion)
 #     kind: Certificate
 #     group: cert-manager.io
 #     version: v1
 #     name: serving-cert
 #     fieldPath: .metadata.namespace # Namespace of the certificate CR
-#   targets: # Do not remove or uncomment the following scaffold marker; required to generate code for target CRD.
+#   targets:  # Do not remove or uncomment the following scaffold marker; required to generate code for target CRD.
 # +kubebuilder:scaffold:crdkustomizecainjectionns
 # - source:
 #     kind: Certificate
@@ -223,5 +260,5 @@ resources:
 #     version: v1
 #     name: serving-cert
 #     fieldPath: .metadata.name
-#   targets: # Do not remove or uncomment the following scaffold marker; required to generate code for target CRD.
+#   targets:  # Do not remove or uncomment the following scaffold marker; required to generate code for target CRD.
 # +kubebuilder:scaffold:crdkustomizecainjectionname

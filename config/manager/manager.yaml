@@ -10,7 +10,7 @@ metadata:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: rbgs-controller-manager
+  name: controller-manager
   namespace: system
   labels:
     control-plane: rbgs-controller
@@ -28,13 +28,18 @@ spec:
         control-plane: rbgs-controller
         app.kubernetes.io/name: rbgs
     spec:
-      serviceAccountName: rbgs-controller-sa
+      serviceAccountName: controller-sa
       containers:
         - name: rbgs
           args:
             - --metrics-bind-address=:8443
             - --leader-elect
             - --health-probe-bind-address=:8081
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           command:
             - /manager
           image: controller:latest

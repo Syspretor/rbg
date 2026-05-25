@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2025 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,7 +26,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/client-go/clientset/versioned"
 	"sigs.k8s.io/rbgs/cmd/cli/util"
 	"sigs.k8s.io/rbgs/pkg/utils"
@@ -66,7 +67,7 @@ func validateRolloutUndo(args []string) error {
 }
 
 func runRolloutUndo(ctx context.Context, rbgClient versioned.Interface, k8sClient kubernetes.Interface, rbgName, namespace string) error {
-	rbgObject, err := rbgClient.WorkloadsV1alpha1().RoleBasedGroups(namespace).Get(ctx, rbgName, metav1.GetOptions{})
+	rbgObject, err := rbgClient.WorkloadsV1alpha2().RoleBasedGroups(namespace).Get(ctx, rbgName, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
@@ -78,7 +79,7 @@ func runRolloutUndo(ctx context.Context, rbgClient versioned.Interface, k8sClien
 	revisions, err := k8sClient.AppsV1().
 		ControllerRevisions(namespace).
 		List(context.TODO(), metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("%s=%s", workloadsv1alpha1.SetNameLabelKey, rbgObject.Name),
+			LabelSelector: fmt.Sprintf("%s=%s", constants.GroupNameLabelKey, rbgObject.Name),
 		})
 	if err != nil {
 		return err
@@ -113,13 +114,13 @@ func runRolloutUndo(ctx context.Context, rbgClient versioned.Interface, k8sClien
 	}
 }
 
-func rollback(ctx context.Context, rbgClient versioned.Interface, rbg *workloadsv1alpha1.RoleBasedGroup, specificRevision *appsv1.ControllerRevision) error {
+func rollback(ctx context.Context, rbgClient versioned.Interface, rbg *workloadsv1alpha2.RoleBasedGroup, specificRevision *appsv1.ControllerRevision) error {
 	newRbg, err := utils.ApplyRevision(rbg, specificRevision)
 	if err != nil {
 		return err
 	}
 	// todo: use ssa to update
-	_, err = rbgClient.WorkloadsV1alpha1().RoleBasedGroups(rbg.Namespace).Update(ctx, newRbg, metav1.UpdateOptions{})
+	_, err = rbgClient.WorkloadsV1alpha2().RoleBasedGroups(rbg.Namespace).Update(ctx, newRbg, metav1.UpdateOptions{})
 	if err == nil {
 		fmt.Printf("rbg %s rollback to revision %d successfully\n", rbg.Name, specificRevision.Revision)
 	}

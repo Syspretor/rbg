@@ -1,10 +1,25 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package reconciler
 
 import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
@@ -15,35 +30,35 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	"sigs.k8s.io/rbgs/test/wrappers"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
 func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-	role := wrappers.BuildBasicRole("test-role").Obj()
-	rollingRole := wrappers.BuildBasicRole("test-role").WithReplicas(4).
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	role := wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj()
+	rollingRole := wrappersv2.BuildStandaloneRole("test-role").WithReplicas(4).WithWorkload("apps/v1", "StatefulSet").
 		WithRollingUpdate(
-			workloadsv1alpha1.RollingUpdate{
-				MaxUnavailable: intstr.FromInt32(2),
-				MaxSurge:       intstr.FromInt32(2),
-				Partition:      ptr.To(int32(1)),
+			workloadsv1alpha2.RollingUpdate{
+				MaxUnavailable: ptr.To(intstr.FromInt32(2)),
+				MaxSurge:       ptr.To(intstr.FromInt32(2)),
+				Partition:      ptr.To(intstr.FromInt32(1)),
 			},
 		).Obj()
 
 	tests := []struct {
 		name      string
-		rbg       *workloadsv1alpha1.RoleBasedGroup
-		role      *workloadsv1alpha1.RoleSpec
+		rbg       *workloadsv1alpha2.RoleBasedGroup
+		role      *workloadsv1alpha2.RoleSpec
 		expectErr bool
 	}{
 		{
@@ -59,9 +74,12 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name:      "rbg name start with numeric",
-			rbg:       wrappers.BuildBasicRoleBasedGroup("123-rbg", "default").Obj(),
-			role:      &role,
+			name: "rbg name start with numeric",
+			rbg:  wrappersv2.BuildBasicRoleBasedGroup("123-rbg", "default").Obj(),
+			role: func() *workloadsv1alpha2.RoleSpec {
+				r := wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj()
+				return &r
+			}(),
 			expectErr: false,
 		},
 	}
@@ -75,9 +93,7 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 					scheme: scheme,
 					client: client,
 				}
-
-				expectedRevisionHash := "revision-hash-value"
-				err := r.Reconciler(context.Background(), tt.rbg, tt.role, expectedRevisionHash)
+				err := r.Reconciler(context.Background(), tt.rbg, tt.role, nil, expectedRevisionHash)
 				if tt.expectErr {
 					assert.Error(t, err)
 				} else {
@@ -93,7 +109,7 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 					)
 					assert.NoError(t, err)
 					assert.Equal(t, tt.rbg.GetWorkloadName(tt.role), sts.Name)
-					assert.Equal(t, expectedRevisionHash, sts.Labels[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, tt.role.Name)])
+					assert.Equal(t, expectedRevisionHash, sts.Labels[fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, tt.role.Name)])
 
 					// Check if Service was created
 					svc := &corev1.Service{}
@@ -114,15 +130,15 @@ func TestStatefulSetReconciler_Reconciler(t *testing.T) {
 func TestStatefulSetReconciler_CheckWorkloadReady(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-	role := wrappers.BuildBasicRole("test-role").Obj()
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	role := wrappersv2.BuildStandaloneRole("test-role").WithWorkload("apps/v1", "StatefulSet").Obj()
 
 	tests := []struct {
 		name        string
-		rbg         *workloadsv1alpha1.RoleBasedGroup
-		role        *workloadsv1alpha1.RoleSpec
+		rbg         *workloadsv1alpha2.RoleBasedGroup
+		role        *workloadsv1alpha2.RoleSpec
 		sts         *appsv1.StatefulSet
 		expectReady bool
 		expectErr   bool
@@ -205,20 +221,20 @@ func TestStatefulSetReconciler_CheckWorkloadReady(t *testing.T) {
 func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 
 	stsOwned := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg-worker",
 			Namespace: "default",
 			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+				constants.GroupNameLabelKey: "test-rbg",
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion: workloadsv1alpha1.GroupVersion.String(),
+					APIVersion: workloadsv1alpha2.GroupVersion.String(),
 					Kind:       "RoleBasedGroup",
 					Name:       "test-rbg",
 					UID:        rbg.UID,
@@ -233,11 +249,11 @@ func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 			Name:      "test-rbg-orphaned",
 			Namespace: "default",
 			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+				constants.GroupNameLabelKey: "test-rbg",
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion: workloadsv1alpha1.GroupVersion.String(),
+					APIVersion: workloadsv1alpha2.GroupVersion.String(),
 					Kind:       "RoleBasedGroup",
 					Name:       "test-rbg",
 					UID:        rbg.UID,
@@ -252,11 +268,11 @@ func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 			Name:      "other-rbg-worker",
 			Namespace: "default",
 			Labels: map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: "other-rbg",
+				constants.GroupNameLabelKey: "other-rbg",
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion: workloadsv1alpha1.GroupVersion.String(),
+					APIVersion: workloadsv1alpha2.GroupVersion.String(),
 					Kind:       "RoleBasedGroup",
 					Name:       "other-rbg",
 					UID:        "other-uid",
@@ -268,7 +284,7 @@ func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		rbg           *workloadsv1alpha1.RoleBasedGroup
+		rbg           *workloadsv1alpha2.RoleBasedGroup
 		existingObjs  []runtime.Object
 		expectDeleted []string
 		expectErr     bool
@@ -322,117 +338,22 @@ func TestStatefulSetReconciler_CleanupOrphanedWorkloads(t *testing.T) {
 	}
 }
 
-func TestStatefulSetReconciler_RecreateWorkload(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = appsv1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
-
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-	role := wrappers.BuildBasicRole("test-role").Obj()
-	sts := &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-rbg-test-role",
-			Namespace: "default",
-			UID:       "sts-uid",
-		},
-	}
-
-	tests := []struct {
-		name          string
-		client        client.Client
-		rbg           *workloadsv1alpha1.RoleBasedGroup
-		role          *workloadsv1alpha1.RoleSpec
-		mockReconcile bool
-		expectErr     bool
-	}{
-		{
-			name:          "recreate existing workload",
-			client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts).Build(),
-			rbg:           rbg,
-			role:          &role,
-			mockReconcile: true,
-			expectErr:     false,
-		},
-		{
-			name:          "recreate non-existing workload",
-			client:        fake.NewClientBuilder().WithScheme(scheme).Build(),
-			rbg:           rbg,
-			role:          &role,
-			mockReconcile: true,
-			expectErr:     false,
-		},
-		{
-			name:          "nil rbg",
-			client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts).Build(),
-			rbg:           nil,
-			role:          &role,
-			mockReconcile: false,
-			expectErr:     false,
-		},
-		{
-			name:          "nil role",
-			client:        fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts).Build(),
-			rbg:           rbg,
-			role:          nil,
-			mockReconcile: false,
-			expectErr:     false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(
-			tt.name, func(t *testing.T) {
-				r := &StatefulSetReconciler{
-					scheme: scheme,
-					client: tt.client,
-				}
-
-				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
-
-				if tt.mockReconcile {
-					// mock rbg controller reconcile
-					go func() {
-						for i := 0; i < 60; i++ {
-							newSts := &appsv1.StatefulSet{
-								ObjectMeta: metav1.ObjectMeta{
-									Name:      rbg.GetWorkloadName(&role),
-									Namespace: "default",
-								},
-							}
-							err := r.client.Create(ctx, newSts)
-							if err != nil && !apierrors.IsAlreadyExists(err) {
-								t.Logf("create failed: %v", err)
-							}
-							time.Sleep(5 * time.Second)
-						}
-					}()
-				}
-
-				err := r.RecreateWorkload(ctx, tt.rbg, tt.role)
-				if (err != nil) != tt.expectErr {
-					t.Errorf("StsReconciler.RecreateWorkload() error = %v, expectError %v", err, tt.expectErr)
-				}
-			},
-		)
-	}
-}
-
 func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 	// test 4 replicas sts rolling update process, maxSurge=2, maxUnavailable=2
 	schema := runtime.NewScheme()
-	_ = workloadsv1alpha1.AddToScheme(schema)
+	_ = workloadsv1alpha2.AddToScheme(schema)
 	_ = appsv1.AddToScheme(schema)
 	_ = corev1.AddToScheme(schema)
 	// the same as *RoleBasedGroup.GetCommonLabelsFromRole()
 	commonLabels := map[string]string{
-		workloadsv1alpha1.SetNameLabelKey:            "test-rbg",
-		workloadsv1alpha1.SetRoleLabelKey:            "test-role",
-		workloadsv1alpha1.SetGroupUniqueHashLabelKey: wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj().GenGroupUniqueKey(),
+		constants.GroupNameLabelKey: "test-rbg",
+		constants.RoleNameLabelKey:  "test-role",
+		constants.GroupUIDLabelKey:  wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj().GenGroupUniqueKey(),
 	}
 
 	tests := []struct {
 		name            string
-		rollingStrategy *workloadsv1alpha1.RolloutStrategy
+		rollingStrategy *workloadsv1alpha2.RolloutStrategy
 		sts             *appsv1.StatefulSet
 		stsUpdated      bool
 		podList         *corev1.PodList
@@ -442,12 +363,12 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 	}{
 		{
 			name: "Stage 1: add 2 new instances",
-			rollingStrategy: &workloadsv1alpha1.RolloutStrategy{
-				Type: workloadsv1alpha1.RollingUpdateStrategyType,
-				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
-					MaxUnavailable: intstr.FromInt32(2),
-					MaxSurge:       intstr.FromInt32(2),
-					Partition:      ptr.To(int32(0)),
+			rollingStrategy: &workloadsv1alpha2.RolloutStrategy{
+				Type: workloadsv1alpha2.RollingUpdateStrategyType,
+				RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+					MaxUnavailable: ptr.To(intstr.FromInt32(2)),
+					MaxSurge:       ptr.To(intstr.FromInt32(2)),
+					Partition:      ptr.To(intstr.FromInt32(0)),
 				},
 			},
 			sts: &appsv1.StatefulSet{
@@ -457,7 +378,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 					UID:       "sts-uid",
 					Labels:    commonLabels,
 					Annotations: map[string]string{
-						workloadsv1alpha1.RoleSizeAnnotationKey: "4",
+						constants.RoleSizeAnnotationKey: "4",
 					},
 				},
 				Spec: appsv1.StatefulSetSpec{
@@ -559,12 +480,12 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 		},
 		{
 			name: "Stage 2: rolling update 2 old instances",
-			rollingStrategy: &workloadsv1alpha1.RolloutStrategy{
-				Type: workloadsv1alpha1.RollingUpdateStrategyType,
-				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
-					MaxUnavailable: intstr.FromInt32(2),
-					MaxSurge:       intstr.FromInt32(2),
-					Partition:      ptr.To(int32(0)),
+			rollingStrategy: &workloadsv1alpha2.RolloutStrategy{
+				Type: workloadsv1alpha2.RollingUpdateStrategyType,
+				RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+					MaxUnavailable: ptr.To(intstr.FromInt32(2)),
+					MaxSurge:       ptr.To(intstr.FromInt32(2)),
+					Partition:      ptr.To(intstr.FromInt32(0)),
 				},
 			},
 			sts: &appsv1.StatefulSet{
@@ -574,7 +495,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 					UID:       "sts-uid",
 					Labels:    commonLabels,
 					Annotations: map[string]string{
-						workloadsv1alpha1.RoleSizeAnnotationKey: "4",
+						constants.RoleSizeAnnotationKey: "4",
 					},
 				},
 				Spec: appsv1.StatefulSetSpec{
@@ -718,12 +639,12 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 		},
 		{
 			name: "Stage 3: rolling update remaining old instances",
-			rollingStrategy: &workloadsv1alpha1.RolloutStrategy{
-				Type: workloadsv1alpha1.RollingUpdateStrategyType,
-				RollingUpdate: &workloadsv1alpha1.RollingUpdate{
-					MaxUnavailable: intstr.FromInt32(2),
-					MaxSurge:       intstr.FromInt32(2),
-					Partition:      ptr.To(int32(0)),
+			rollingStrategy: &workloadsv1alpha2.RolloutStrategy{
+				Type: workloadsv1alpha2.RollingUpdateStrategyType,
+				RollingUpdate: &workloadsv1alpha2.RollingUpdate{
+					MaxUnavailable: ptr.To(intstr.FromInt32(2)),
+					MaxSurge:       ptr.To(intstr.FromInt32(2)),
+					Partition:      ptr.To(intstr.FromInt32(0)),
 				},
 			},
 			sts: &appsv1.StatefulSet{
@@ -733,7 +654,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 					UID:       "sts-uid",
 					Labels:    commonLabels,
 					Annotations: map[string]string{
-						workloadsv1alpha1.RoleSizeAnnotationKey: "4",
+						constants.RoleSizeAnnotationKey: "4",
 					},
 				},
 				Spec: appsv1.StatefulSetSpec{
@@ -899,7 +820,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
-				rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+				rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 				rbg.Spec.Roles[0].Replicas = ptr.To(int32(4))
 				if tt.rollingStrategy != nil {
 					rbg.Spec.Roles[0].RolloutStrategy = tt.rollingStrategy
@@ -912,7 +833,7 @@ func TestStatefulSetReconciler_rollingUpdateParameters(t *testing.T) {
 
 				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))
 				retPartition, retReplicas, retErr := r.rollingUpdateParameters(
-					ctx, &rbg.Spec.Roles[0], tt.sts, tt.stsUpdated, rbg.GetCommonLabelsFromRole(&rbg.Spec.Roles[0]))
+					ctx, &rbg.Spec.Roles[0], tt.sts, tt.stsUpdated, nil)
 
 				if tt.wantErr != (retErr != nil) {
 					t.Errorf("rollingUpdateParameters() error = %v, wantErr %v", retErr, tt.wantErr)
@@ -1042,4 +963,161 @@ func mergeLabels(labels ...map[string]string) map[string]string {
 		}
 	}
 	return result
+}
+
+func TestConstructStatefulSetApplyConfiguration_LabelsAndAnnotations(t *testing.T) {
+	role := &workloadsv1alpha2.RoleSpec{
+		Name:     "test-role",
+		Replicas: ptr.To(int32(3)),
+		Pattern: workloadsv1alpha2.Pattern{
+			StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+				TemplateSource: workloadsv1alpha2.TemplateSource{
+					Template: &corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "test-container",
+									Image: "test-image:v1",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg",
+			Namespace: "default",
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{*role},
+		},
+	}
+
+	tests := []struct {
+		name                string
+		roleLabels          map[string]string
+		roleAnnotations     map[string]string
+		expectedLabels      map[string]string
+		expectedAnnotations map[string]string
+	}{
+		{
+			name: "test role labels and annotations",
+			roleLabels: map[string]string{
+				"app":          "my-app",
+				"version":      "v1.0",
+				"custom-label": "role-value",
+			},
+			expectedLabels: map[string]string{
+				"app":                       "my-app",
+				"version":                   "v1.0",
+				"custom-label":              "role-value",
+				constants.RoleNameLabelKey:  role.Name,
+				constants.GroupNameLabelKey: rbg.Name,
+				constants.GroupUIDLabelKey:  rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+			},
+			roleAnnotations: map[string]string{
+				"description":       "custom description",
+				"custom-annotation": "role-value",
+			},
+			expectedAnnotations: map[string]string{
+				"description":                   "custom description",
+				"custom-annotation":             "role-value",
+				constants.RoleSizeAnnotationKey: "3",
+			},
+		},
+		{
+			name: "test role labels and annotations with priority",
+			roleLabels: map[string]string{
+				"app":                       "my-app",
+				"version":                   "v1.0",
+				"custom-label":              "role-value",
+				constants.RoleNameLabelKey:  "custom",
+				constants.GroupNameLabelKey: "custom",
+				constants.GroupUIDLabelKey:  "custom",
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): "custom",
+			},
+			expectedLabels: map[string]string{
+				"app":                       "my-app",
+				"version":                   "v1.0",
+				"custom-label":              "role-value",
+				constants.RoleNameLabelKey:  role.Name,
+				constants.GroupNameLabelKey: rbg.Name,
+				constants.GroupUIDLabelKey:  rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+			},
+			roleAnnotations: map[string]string{
+				"description":                   "custom description",
+				"custom-annotation":             "role-value",
+				constants.RoleSizeAnnotationKey: "custom",
+			},
+			expectedAnnotations: map[string]string{
+				"description":                   "custom description",
+				"custom-annotation":             "role-value",
+				constants.RoleSizeAnnotationKey: "3",
+			},
+		},
+		{
+			name:            "no role labels or annotations",
+			roleLabels:      nil,
+			roleAnnotations: nil,
+			expectedLabels: map[string]string{
+				constants.RoleNameLabelKey:                                role.Name,
+				constants.GroupNameLabelKey:                               rbg.Name,
+				constants.GroupUIDLabelKey:                                rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+			},
+			expectedAnnotations: map[string]string{
+				constants.RoleSizeAnnotationKey: "3",
+			},
+		},
+		{
+			name:            "empty role labels and annotations",
+			roleLabels:      map[string]string{},
+			roleAnnotations: map[string]string{},
+			expectedLabels: map[string]string{
+				constants.RoleNameLabelKey:                                role.Name,
+				constants.GroupNameLabelKey:                               rbg.Name,
+				constants.GroupUIDLabelKey:                                rbg.GenGroupUniqueKey(),
+				fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name): expectedRevisionHash,
+			},
+			expectedAnnotations: map[string]string{
+				constants.RoleSizeAnnotationKey: "3",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			_ = appsv1.AddToScheme(scheme)
+			_ = corev1.AddToScheme(scheme)
+			_ = workloadsv1alpha2.AddToScheme(scheme)
+
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+			reconciler := NewStatefulSetReconciler(scheme, fakeClient)
+
+			role.Labels = tt.roleLabels
+			role.Annotations = tt.roleAnnotations
+
+			result, err := reconciler.constructStatefulSetApplyConfiguration(
+				context.Background(),
+				rbg,
+				role,
+				&appsv1.StatefulSet{},
+				expectedRevisionHash,
+			)
+
+			if err != nil {
+				t.Fatalf("constructStatefulSetApplyConfiguration() error = %v", err)
+			}
+
+			assert.Equal(t, tt.expectedLabels, result.Labels)
+			assert.Equal(t, tt.expectedAnnotations, result.Annotations)
+		})
+	}
 }

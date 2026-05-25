@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package reconciler
 
 import (
@@ -6,26 +22,28 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 type DeploymentReconciler struct {
-	scheme *runtime.Scheme
-	client client.Client
+	scheme          *runtime.Scheme
+	client          client.Client
+	podGroupManager scheduler.PodGroupManager
 }
 
 var _ WorkloadReconciler = &DeploymentReconciler{}
@@ -34,9 +52,22 @@ func NewDeploymentReconciler(scheme *runtime.Scheme, client client.Client) *Depl
 	return &DeploymentReconciler{scheme: scheme, client: client}
 }
 
+// SetPodGroupManager implements PodGroupManagerSetter.
+func (r *DeploymentReconciler) SetPodGroupManager(m scheduler.PodGroupManager) {
+	r.podGroupManager = m
+}
+
+func (r *DeploymentReconciler) Validate(
+	ctx context.Context, role *workloadsv1alpha2.RoleSpec) error {
+	logger := log.FromContext(ctx)
+	logger.V(1).Info("start to validate role declaration")
+
+	return nil
+}
+
 func (r *DeploymentReconciler) Reconciler(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
-	revisionKey string) error {
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
+	rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate, revisionKey string) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling deployment workload")
 
@@ -46,7 +77,7 @@ func (r *DeploymentReconciler) Reconciler(
 		return err
 	}
 
-	deployApplyConfig, err := r.constructDeployApplyConfiguration(ctx, rbg, role, oldDeploy, revisionKey)
+	deployApplyConfig, err := r.constructDeployApplyConfiguration(ctx, rbg, role, oldDeploy, rollingUpdateStrategy, revisionKey)
 	if err != nil {
 		logger.Error(err, "Failed to construct deployment apply configuration")
 		return err
@@ -68,7 +99,7 @@ func (r *DeploymentReconciler) Reconciler(
 		logger.Info(fmt.Sprintf("deployment not equal, diff: %s", err.Error()))
 	}
 
-	roleHashKey := fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)
+	roleHashKey := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)
 	revisionHashEqual := newDeploy.Labels[roleHashKey] == oldDeploy.Labels[roleHashKey]
 	if !revisionHashEqual {
 		logger.Info(fmt.Sprintf("deployment hash not equal, old: %s, new: %s",
@@ -89,9 +120,10 @@ func (r *DeploymentReconciler) Reconciler(
 
 func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
 	oldDeploy *appsv1.Deployment,
+	rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate,
 	revisionKey string,
 ) (*appsapplyv1.DeploymentApplyConfiguration, error) {
 	matchLabels := rbg.GetCommonLabelsFromRole(role)
@@ -101,6 +133,7 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 	}
 
 	podReconciler := NewPodReconciler(r.scheme, r.client)
+	podReconciler.SetPodGroupManager(r.podGroupManager)
 	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, maps.Clone(matchLabels),
 	)
@@ -108,7 +141,7 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 		return nil, err
 	}
 	deployLabel := maps.Clone(matchLabels)
-	deployLabel[fmt.Sprintf(workloadsv1alpha1.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
+	deployLabel[fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)] = revisionKey
 
 	// construct deployment apply configuration
 	deployConfig := appsapplyv1.Deployment(rbg.GetWorkloadName(role), rbg.Namespace).
@@ -121,8 +154,8 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 						WithMatchLabels(matchLabels),
 				),
 		).
-		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
-		WithLabels(deployLabel).
+		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
+		WithLabels(labels.Merge(maps.Clone(role.Labels), deployLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().
 				WithAPIVersion(rbg.APIVersion).
@@ -133,15 +166,48 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 				WithController(true),
 		)
 	if role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil {
+		rollingUpdate := appsapplyv1.RollingUpdateDeployment()
+		if role.RolloutStrategy.RollingUpdate.MaxSurge != nil {
+			rollingUpdate = rollingUpdate.WithMaxSurge(*role.RolloutStrategy.RollingUpdate.MaxSurge)
+		}
+		if role.RolloutStrategy.RollingUpdate.MaxUnavailable != nil {
+			rollingUpdate = rollingUpdate.WithMaxUnavailable(*role.RolloutStrategy.RollingUpdate.MaxUnavailable)
+		}
+
 		deployConfig = deployConfig.WithSpec(
 			deployConfig.Spec.WithStrategy(
 				appsapplyv1.DeploymentStrategy().
 					WithType(appsv1.DeploymentStrategyType(role.RolloutStrategy.Type)).
-					WithRollingUpdate(
-						appsapplyv1.RollingUpdateDeployment().
-							WithMaxSurge(role.RolloutStrategy.RollingUpdate.MaxSurge).
-							WithMaxUnavailable(role.RolloutStrategy.RollingUpdate.MaxUnavailable),
+					WithRollingUpdate(rollingUpdate),
+			),
+		)
+	}
+	if rollingUpdateStrategy != nil {
+		if deployConfig.Spec.Strategy == nil {
+			deployConfig = deployConfig.WithSpec(
+				deployConfig.Spec.WithStrategy(
+					appsapplyv1.DeploymentStrategy(),
+				),
+			)
+		}
+		if deployConfig.Spec.Strategy.RollingUpdate == nil {
+			deployConfig = deployConfig.WithSpec(
+				deployConfig.Spec.WithStrategy(
+					deployConfig.Spec.Strategy.WithRollingUpdate(
+						appsapplyv1.RollingUpdateDeployment(),
 					),
+				),
+			)
+		}
+
+		rollingUpdate := appsapplyv1.RollingUpdateDeployment()
+		if rollingUpdateStrategy.MaxUnavailable != nil {
+			rollingUpdate = rollingUpdate.WithMaxUnavailable(*rollingUpdateStrategy.MaxUnavailable)
+		}
+
+		deployConfig = deployConfig.WithSpec(
+			deployConfig.Spec.WithStrategy(
+				deployConfig.Spec.Strategy.WithRollingUpdate(rollingUpdate),
 			),
 		)
 	}
@@ -151,34 +217,23 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 
 func (r *DeploymentReconciler) ConstructRoleStatus(
 	ctx context.Context,
-	rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
-) (workloadsv1alpha1.RoleStatus, bool, error) {
-	updateStatus := false
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
+) (workloadsv1alpha2.RoleStatus, error) {
 	deploy := &appsv1.Deployment{}
 	if err := r.client.Get(
 		ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, deploy,
 	); err != nil {
-		return workloadsv1alpha1.RoleStatus{}, false, err
+		return workloadsv1alpha2.RoleStatus{Name: role.Name}, err
 	}
 
-	currentReplicas := *deploy.Spec.Replicas
-	currentReady := deploy.Status.ReadyReplicas
-	status, found := rbg.GetRoleStatus(role.Name)
-	if !found || status.Replicas != currentReplicas || status.ReadyReplicas != currentReady {
-		status = workloadsv1alpha1.RoleStatus{
-			Name:          role.Name,
-			Replicas:      currentReplicas,
-			ReadyReplicas: currentReady,
-		}
-		updateStatus = true
-	}
-
-	return status, updateStatus, nil
+	return ConstructWorkloadRoleStatus(ctx, rbg, role,
+		deploy.Status.Replicas, deploy.Status.ReadyReplicas, deploy.Status.UpdatedReplicas,
+		deploy.Generation, deploy.Status.ObservedGeneration), nil
 }
 
 func (r *DeploymentReconciler) CheckWorkloadReady(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup, role *workloadsv1alpha1.RoleSpec,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 ) (bool, error) {
 	deploy := &appsv1.Deployment{}
 	if err := r.client.Get(
@@ -186,11 +241,17 @@ func (r *DeploymentReconciler) CheckWorkloadReady(
 	); err != nil {
 		return false, err
 	}
+
+	// We don't check ready if workload is rolling update if maxSkew is set.
+	if utils.RoleInMaxSkewCoordinationV2(rbg, role.Name) &&
+		deploy.Status.UpdatedReplicas != deploy.Status.Replicas {
+		return true, nil
+	}
 	return deploy.Status.ReadyReplicas == *deploy.Spec.Replicas, nil
 }
 
 func (r *DeploymentReconciler) CleanupOrphanedWorkloads(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
+	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
 	logger := log.FromContext(ctx)
 	// list deploy managed by rbg
@@ -199,7 +260,7 @@ func (r *DeploymentReconciler) CleanupOrphanedWorkloads(
 		context.Background(), deployList, client.InNamespace(rbg.Namespace),
 		client.MatchingLabels(
 			map[string]string{
-				workloadsv1alpha1.SetNameLabelKey: rbg.Name,
+				constants.GroupNameLabelKey: rbg.Name,
 			},
 		),
 	); err != nil {
@@ -212,7 +273,7 @@ func (r *DeploymentReconciler) CleanupOrphanedWorkloads(
 		}
 		found := false
 		for _, role := range rbg.Spec.Roles {
-			if role.Workload.Kind == "Deployment" && rbg.GetWorkloadName(&role) == deploy.Name {
+			if role.GetWorkloadSpec().Kind == "Deployment" && rbg.GetWorkloadName(&role) == deploy.Name {
 				found = true
 				break
 			}
@@ -224,55 +285,6 @@ func (r *DeploymentReconciler) CleanupOrphanedWorkloads(
 			}
 		}
 	}
-	return nil
-}
-
-func (r *DeploymentReconciler) RecreateWorkload(
-	ctx context.Context, rbg *workloadsv1alpha1.RoleBasedGroup,
-	role *workloadsv1alpha1.RoleSpec,
-) error {
-	logger := log.FromContext(ctx)
-	if rbg == nil || role == nil {
-		return nil
-	}
-
-	deployName := rbg.GetWorkloadName(role)
-	var deploy appsv1.Deployment
-	err := r.client.Get(ctx, types.NamespacedName{Name: deployName, Namespace: rbg.Namespace}, &deploy)
-	// if deploy is not found, skip delete deploy
-	if err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-	if deploy.UID == "" {
-		return nil
-	}
-
-	logger.Info(fmt.Sprintf("Recreate deployment workload, delete deployment %s", deployName))
-	if err := r.client.Delete(ctx, &deploy); err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-
-	// wait new deployment create
-	var retErr error
-	err = wait.PollUntilContextTimeout(
-		ctx, 5*time.Second, 5*time.Minute, true, func(ctx context.Context) (bool, error) {
-			var newDeploy appsv1.Deployment
-			retErr = r.client.Get(ctx, types.NamespacedName{Name: deployName, Namespace: rbg.Namespace}, &newDeploy)
-			if retErr != nil {
-				if apierrors.IsNotFound(retErr) {
-					return false, nil
-				}
-				return false, retErr
-			}
-			return true, nil
-		},
-	)
-
-	if err != nil {
-		logger.Error(retErr, "wait new deployment creating error")
-		return retErr
-	}
-
 	return nil
 }
 
@@ -323,19 +335,8 @@ func deploymentSpecEqual(spec1, spec2 appsv1.DeploymentSpec) (bool, error) {
 }
 
 func deploymentStatusEqual(oldStatus, newStatus appsv1.DeploymentStatus) (bool, error) {
-	if oldStatus.Replicas != newStatus.Replicas {
-		return false, fmt.Errorf(
-			"status.replicas not equal, old: %v, new: %v",
-			oldStatus.Replicas, newStatus.Replicas,
-		)
-	}
-
-	if oldStatus.ReadyReplicas != newStatus.ReadyReplicas {
-		return false, fmt.Errorf(
-			"status.ReadyReplicas not equal, old: %v, new: %v",
-			oldStatus.ReadyReplicas, newStatus.ReadyReplicas,
-		)
+	if !reflect.DeepEqual(oldStatus, newStatus) {
+		return false, fmt.Errorf("status not equal")
 	}
 	return true, nil
-
 }

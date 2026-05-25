@@ -1,20 +1,34 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package reconciler
 
 import (
 	"context"
-	"fmt"
 	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
-	"sigs.k8s.io/rbgs/pkg/scheduler"
-	"sigs.k8s.io/rbgs/test/wrappers"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
 func Test_podSpecEqual(t *testing.T) {
@@ -126,279 +140,6 @@ func Test_podSpecEqual(t *testing.T) {
 				}
 				if got != tt.want {
 					t.Errorf("podSpecEqual() got = %v, want %v", got, tt.want)
-				}
-			},
-		)
-	}
-}
-
-func Test_containerEqual(t *testing.T) {
-	type args struct {
-		c1 corev1.Container
-		c2 corev1.Container
-	}
-	tests := []struct {
-		name    string
-		args    args
-		want    bool
-		wantErr bool
-	}{
-		{
-			name: "equal containers",
-			args: args{
-				c1: corev1.Container{
-					Name:  "container1",
-					Image: "nginx:1.20",
-				},
-				c2: corev1.Container{
-					Name:  "container1",
-					Image: "nginx:1.20",
-				},
-			},
-			want:    true,
-			wantErr: false,
-		},
-		{
-			name: "different container names",
-			args: args{
-				c1: corev1.Container{
-					Name:  "container1",
-					Image: "nginx:1.20",
-				},
-				c2: corev1.Container{
-					Name:  "container2",
-					Image: "nginx:1.20",
-				},
-			},
-			want:    false,
-			wantErr: true,
-		},
-		{
-			name: "different container images",
-			args: args{
-				c1: corev1.Container{
-					Name:  "container1",
-					Image: "nginx:1.20",
-				},
-				c2: corev1.Container{
-					Name:  "container1",
-					Image: "nginx:1.21",
-				},
-			},
-			want:    false,
-			wantErr: true,
-		},
-		{
-			name: "equal containers with commands",
-			args: args{
-				c1: corev1.Container{
-					Name:    "container1",
-					Image:   "nginx:1.20",
-					Command: []string{"sh", "-c"},
-				},
-				c2: corev1.Container{
-					Name:    "container1",
-					Image:   "nginx:1.20",
-					Command: []string{"sh", "-c"},
-				},
-			},
-			want:    true,
-			wantErr: false,
-		},
-		{
-			name: "different container commands",
-			args: args{
-				c1: corev1.Container{
-					Name:    "container1",
-					Image:   "nginx:1.20",
-					Command: []string{"sh", "-c"},
-				},
-				c2: corev1.Container{
-					Name:    "container1",
-					Image:   "nginx:1.20",
-					Command: []string{"bash", "-c"},
-				},
-			},
-			want:    false,
-			wantErr: true,
-		},
-		{
-			name: "equal containers with env vars",
-			args: args{
-				c1: corev1.Container{
-					Name:  "container1",
-					Image: "nginx:1.20",
-					Env: []corev1.EnvVar{
-						{Name: "ENV1", Value: "value1"},
-						{Name: "ENV2", Value: "value2"},
-					},
-				},
-				c2: corev1.Container{
-					Name:  "container1",
-					Image: "nginx:1.20",
-					Env: []corev1.EnvVar{
-						{Name: "ENV1", Value: "value1"},
-						{Name: "ENV2", Value: "value2"},
-					},
-				},
-			},
-			want:    true,
-			wantErr: false,
-		},
-		{
-			name: "equal containers with volume mounts",
-			args: args{
-				c1: corev1.Container{
-					Name:  "container1",
-					Image: "nginx:1.20",
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "vol1", MountPath: "/data"},
-					},
-				},
-				c2: corev1.Container{
-					Name:  "container1",
-					Image: "nginx:1.20",
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "vol1", MountPath: "/data"},
-					},
-				},
-			},
-			want:    true,
-			wantErr: false,
-		},
-		{
-			name: "different volume mounts",
-			args: args{
-				c1: corev1.Container{
-					Name:  "container1",
-					Image: "nginx:1.20",
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "vol1", MountPath: "/data"},
-					},
-				},
-				c2: corev1.Container{
-					Name:  "container1",
-					Image: "nginx:1.20",
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "vol2", MountPath: "/data"},
-					},
-				},
-			},
-			want:    false,
-			wantErr: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(
-			tt.name, func(t *testing.T) {
-				got, err := containerEqual(tt.args.c1, tt.args.c2)
-				if (err != nil) != tt.wantErr {
-					t.Errorf("containerEqual() error = %v, wantErr %v", err, tt.wantErr)
-					return
-				}
-				if got != tt.want {
-					t.Errorf("containerEqual() got = %v, want %v", got, tt.want)
-				}
-			},
-		)
-	}
-}
-
-func Test_envVarsEqual(t *testing.T) {
-	type args struct {
-		env1 []corev1.EnvVar
-		env2 []corev1.EnvVar
-	}
-	tests := []struct {
-		name    string
-		args    args
-		want    bool
-		wantErr bool
-	}{
-		{
-			name: "equal env vars",
-			args: args{
-				env1: []corev1.EnvVar{
-					{Name: "ENV1", Value: "value1"},
-					{Name: "ENV2", Value: "value2"},
-				},
-				env2: []corev1.EnvVar{
-					{Name: "ENV1", Value: "value1"},
-					{Name: "ENV2", Value: "value2"},
-				},
-			},
-			want:    true,
-			wantErr: false,
-		},
-		{
-			name: "equal env vars different order",
-			args: args{
-				env1: []corev1.EnvVar{
-					{Name: "ENV2", Value: "value2"},
-					{Name: "ENV1", Value: "value1"},
-				},
-				env2: []corev1.EnvVar{
-					{Name: "ENV1", Value: "value1"},
-					{Name: "ENV2", Value: "value2"},
-				},
-			},
-			want:    true,
-			wantErr: false,
-		},
-		{
-			name: "different env var values",
-			args: args{
-				env1: []corev1.EnvVar{
-					{Name: "ENV1", Value: "value1"},
-				},
-				env2: []corev1.EnvVar{
-					{Name: "ENV1", Value: "value2"},
-				},
-			},
-			want:    false,
-			wantErr: true,
-		},
-		{
-			name: "different env var count",
-			args: args{
-				env1: []corev1.EnvVar{
-					{Name: "ENV1", Value: "value1"},
-				},
-				env2: []corev1.EnvVar{
-					{Name: "ENV1", Value: "value1"},
-					{Name: "ENV2", Value: "value2"},
-				},
-			},
-			want:    false,
-			wantErr: true,
-		},
-		{
-			name: "system env vars filtered",
-			args: args{
-				env1: []corev1.EnvVar{
-					{Name: "ENV1", Value: "value1"},
-					{Name: "ROLE_NAME", Value: "leader"},
-					{Name: "ROLE_INDEX", Value: "0"},
-					{Name: "GROUP_NAME", Value: "nginx-cluster"},
-				},
-				env2: []corev1.EnvVar{
-					{Name: "ENV1", Value: "value1"},
-				},
-			},
-			want:    true,
-			wantErr: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(
-			tt.name, func(t *testing.T) {
-				got, err := envVarsEqual(tt.args.env1, tt.args.env2)
-				if (err != nil) != tt.wantErr {
-					t.Errorf("envVarsEqual() error = %v, wantErr %v", err, tt.wantErr)
-					return
-				}
-				if got != tt.want {
-					t.Errorf("envVarsEqual() got = %v, want %v", got, tt.want)
 				}
 			},
 		)
@@ -748,13 +489,13 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration(t *testing.T) 
 	// Setup
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reconciler := NewPodReconciler(scheme, client)
 
 	// Test data
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "test-ns").Obj()
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "test-ns").Obj()
 	role := &rbg.Spec.Roles[0]
 
 	tests := []struct {
@@ -768,21 +509,6 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration(t *testing.T) 
 			name:        "basic pod template construction",
 			podLabels:   map[string]string{"role": "worker"},
 			expectError: false,
-		},
-		{
-			name: "with gang scheduling enabled",
-			podLabels: map[string]string{
-				"custom-label": "custom-value",
-			},
-			expectError: false,
-			setupFunc: func(pr *PodReconciler) {
-				// Enable gang scheduling by adding the annotation
-				rbg.Spec.PodGroupPolicy = &workloadsv1alpha1.PodGroupPolicy{
-					PodGroupPolicySource: workloadsv1alpha1.PodGroupPolicySource{
-						KubeScheduling: &workloadsv1alpha1.KubeSchedulingPodGroupPolicySource{},
-					},
-				}
-			},
 		},
 		{
 			name: "with custom pod template",
@@ -846,11 +572,6 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration(t *testing.T) 
 							assert.Equal(t, v, result.Labels[k])
 						}
 					}
-
-					// If gang scheduling is enabled, check for pod group label
-					if rbg.EnableGangScheduling() {
-						assert.Equal(t, rbg.Name, result.Labels[scheduler.KubePodGroupLabelKey])
-					}
 				}
 			},
 		)
@@ -860,12 +581,12 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration(t *testing.T) 
 func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration_WithInjectors(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
-	_ = workloadsv1alpha1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	reconciler := NewPodReconciler(scheme, client)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 	role := &rbg.Spec.Roles[0]
 
 	t.Run(
@@ -908,7 +629,7 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration_WithInjectors(
 
 	t.Run(
 		"with env injector enabled", func(t *testing.T) {
-			reconciler.SetInjectors([]string{"env"})
+			reconciler.SetInjectors([]string{"common_env"})
 
 			result, err := reconciler.ConstructPodTemplateSpecApplyConfiguration(
 				context.Background(),
@@ -926,101 +647,6 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration_WithInjectors(
 	)
 }
 
-func TestContainerEqual(t *testing.T) {
-	baseContainer := corev1.Container{
-		Name:    "app",
-		Image:   "nginx:latest",
-		Command: []string{"/bin/sh"},
-		Args:    []string{"-c", "echo hello"},
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				"cpu":    resource.MustParse("100m"),
-				"memory": resource.MustParse("100Mi"),
-			},
-		},
-		ImagePullPolicy: corev1.PullIfNotPresent,
-		Env: []corev1.EnvVar{
-			{Name: "ENV", Value: "prod"},
-		},
-		StartupProbe:   &corev1.Probe{TimeoutSeconds: 10},
-		LivenessProbe:  &corev1.Probe{TimeoutSeconds: 10},
-		ReadinessProbe: &corev1.Probe{TimeoutSeconds: 10},
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: "config", MountPath: "/etc/config"},
-		},
-	}
-
-	t.Run("equal containers", func(t *testing.T) {
-		ok, err := containerEqual(baseContainer, baseContainer)
-		if !ok || err != nil {
-			t.Fatalf("expected equal, got ok=%v, err=%v", ok, err)
-		}
-	})
-
-	t.Run("different name", func(t *testing.T) {
-		c2 := baseContainer
-		c2.Name = "diff"
-		ok, err := containerEqual(baseContainer, c2)
-		if ok || err == nil || err.Error() != "container name not equal" {
-			t.Fatalf("expected name not equal error, got ok=%v, err=%v", ok, err)
-		}
-	})
-
-	t.Run("different image", func(t *testing.T) {
-		c2 := baseContainer
-		c2.Image = "busybox"
-		ok, err := containerEqual(baseContainer, c2)
-		if ok || err == nil || err.Error() != "container image not equal" {
-			t.Fatalf("expected image not equal error, got ok=%v, err=%v", ok, err)
-		}
-	})
-
-	t.Run("different env", func(t *testing.T) {
-		c2 := baseContainer
-		c2.Env = []corev1.EnvVar{
-			{Name: "ENV", Value: "dev"},
-		}
-		ok, err := containerEqual(baseContainer, c2)
-		if ok || err == nil || !contains(err.Error(), "env not equal") {
-			t.Fatalf("expected env not equal error, got ok=%v, err=%v", ok, err)
-		}
-	})
-
-	t.Run("different startup probe", func(t *testing.T) {
-		c2 := baseContainer
-		c2.StartupProbe = &corev1.Probe{}
-		ok, err := containerEqual(baseContainer, c2)
-		if ok || err == nil || !contains(err.Error(), "container startup probe not equal") {
-			t.Fatalf("expected startup probe not equal error, got ok=%v, err=%v", ok, err)
-		}
-	})
-
-	t.Run("different liveness probe", func(t *testing.T) {
-		c2 := baseContainer
-		c2.LivenessProbe = &corev1.Probe{TimeoutSeconds: 5}
-		ok, err := containerEqual(baseContainer, c2)
-		if ok || err == nil || !contains(err.Error(), "container liveness probe not equal") {
-			t.Fatalf("expected liveness probe not equal error, got ok=%v, err=%v", ok, err)
-		}
-	})
-
-	t.Run("different readiness probe", func(t *testing.T) {
-		c2 := baseContainer
-		c2.ReadinessProbe = &corev1.Probe{TimeoutSeconds: 5}
-		ok, err := containerEqual(baseContainer, c2)
-		if ok || err == nil || !contains(err.Error(), "container readiness probe not equal") {
-			t.Fatalf("expected readiness probe not equal error, got ok=%v, err=%v", ok, err)
-		}
-	})
-}
-
-// contains checks if a substring exists in a string
-func contains(s, sub string) bool {
-	return reflect.ValueOf(s).String() != "" && (len(s) >= len(sub) && (func() bool {
-		return fmt.Sprint(s)[0:len(sub)] == sub || contains(s[1:], sub)
-	})())
-}
-
 func Test_setExclusiveAffinities(t *testing.T) {
 	tests := []struct {
 		name                                   string
@@ -1034,7 +660,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			pod:            &corev1.PodTemplateSpec{},
 			uniqueKey:      "abcd1234",
 			topologyKey:    "kubernetes.io/hostname",
-			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			podAffinityKey: constants.GroupUniqueHashLabelKey,
 			wantErr:        false,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -1046,7 +672,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"abcd1234"},
 											},
@@ -1062,11 +688,11 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpExists,
 											},
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpNotIn,
 												Values:   []string{"abcd1234"},
 											},
@@ -1099,7 +725,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			},
 			uniqueKey:      "xyz5678",
 			topologyKey:    "node",
-			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			podAffinityKey: constants.GroupUniqueHashLabelKey,
 			wantErr:        false,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -1112,7 +738,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"xyz5678"},
 											},
@@ -1129,11 +755,11 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpExists,
 											},
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpNotIn,
 												Values:   []string{"xyz5678"},
 											},
@@ -1158,7 +784,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"old"},
 											},
@@ -1177,7 +803,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			},
 			uniqueKey:      "newkey",
 			topologyKey:    "rack",
-			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			podAffinityKey: constants.GroupUniqueHashLabelKey,
 			wantErr:        false,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -1189,7 +815,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+												Key:      constants.GroupUniqueHashLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"old"},
 											},
@@ -1211,7 +837,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			pod:            &corev1.PodTemplateSpec{},
 			uniqueKey:      "key",
 			topologyKey:    "", // illegal
-			podAffinityKey: workloadsv1alpha1.SetGroupUniqueHashLabelKey,
+			podAffinityKey: constants.GroupUniqueHashLabelKey,
 			want:           &corev1.PodTemplateSpec{}, // No change
 			wantErr:        true,
 		},
@@ -1335,6 +961,142 @@ func Test_exclusiveAffinityApplied(t *testing.T) {
 			got := exclusiveAffinityApplied(tt.podTemplateSpec, tt.topologyKey)
 			if got != tt.want {
 				t.Errorf("exclusiveAffinityApplied() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_applyStrategicMergePatch(t *testing.T) {
+	type args struct {
+		base  corev1.PodTemplateSpec
+		patch runtime.RawExtension
+	}
+	tests := []struct {
+		name    string
+		args    args
+		want    corev1.PodTemplateSpec
+		wantErr bool
+	}{
+		{
+			name: "nil or empty patch returns base unchanged",
+			args: args{
+				base: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "app", Image: "nginx:1.20"},
+						},
+					},
+				},
+				patch: runtime.RawExtension{Raw: nil},
+			},
+			want: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "app", Image: "nginx:1.20"},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "patch adds new field",
+			args: args{
+				base: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "app", Image: "nginx:1.20"},
+						},
+					},
+				},
+				patch: runtime.RawExtension{
+					Raw: []byte(`{"spec":{"restartPolicy":"Always"}}`),
+				},
+			},
+			want: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "app", Image: "nginx:1.20"},
+					},
+					RestartPolicy: corev1.RestartPolicyAlways,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "patch overrides existing field",
+			args: args{
+				base: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "app", Image: "nginx:1.20"},
+						},
+						RestartPolicy: corev1.RestartPolicyNever,
+					},
+				},
+				patch: runtime.RawExtension{
+					Raw: []byte(`{"spec":{"restartPolicy":"Always"}}`),
+				},
+			},
+			want: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "app", Image: "nginx:1.20"},
+					},
+					RestartPolicy: corev1.RestartPolicyAlways,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "patch modifies container",
+			args: args{
+				base: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "app", Image: "nginx:1.20"},
+						},
+					},
+				},
+				patch: runtime.RawExtension{
+					Raw: []byte(`{"spec":{"containers":[{"name":"app","command":["sh","-c","echo hello"]}]}}`),
+				},
+			},
+			want: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "app", Image: "nginx:1.20", Command: []string{"sh", "-c", "echo hello"}},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid JSON patch returns error",
+			args: args{
+				base: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "app", Image: "nginx:1.20"},
+						},
+					},
+				},
+				patch: runtime.RawExtension{
+					Raw: []byte(`{invalid json}`),
+				},
+			},
+			want:    corev1.PodTemplateSpec{},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := applyStrategicMergePatch(tt.args.base, tt.args.patch)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("applyStrategicMergePatch() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("applyStrategicMergePatch() got = %v, want %v", got, tt.want)
 			}
 		})
 	}

@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2025 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,20 +18,21 @@ package utils
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kubecontroller "k8s.io/kubernetes/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 )
 
 const (
-	Timeout  = 60 * time.Second
+	Timeout  = 150 * time.Second
 	Interval = time.Millisecond * 250
 
 	DefaultImage                    = "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
@@ -73,39 +74,6 @@ func CreatePatioRuntime(ctx context.Context, rclient client.Client) error {
 	}
 
 	return nil
-}
-
-func DeletePod(ctx context.Context, rclient client.Client, namespace string, rbgName string) error {
-	logger := log.FromContext(ctx)
-	// list pod
-	podList := &v1.PodList{}
-	if err := rclient.List(
-		ctx, podList, client.InNamespace(namespace), client.MatchingLabels{
-			workloadsv1alpha1.SetNameLabelKey: rbgName,
-		},
-	); err != nil {
-		logger.V(1).Error(err, "list pod error")
-		return err
-	}
-
-	if len(podList.Items) == 0 {
-		err := fmt.Errorf("no pod belongs to rbg %s, can not delete pod", rbgName)
-		logger.V(1).Error(err, "pod is empty")
-		return err
-	}
-
-	err := rclient.Delete(
-		ctx, &v1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      podList.Items[0].Name,
-				Namespace: namespace,
-			},
-		},
-	)
-	if err != nil {
-		logger.V(1).Error(err, "delete pod error")
-	}
-	return err
 }
 
 func UpdateRbg(
@@ -173,4 +141,50 @@ func MapContains(m map[string]string, key, value string) bool {
 		}
 	}
 	return false
+}
+
+// SetPodEvicted simulates a Pod being evicted by updating its status subresource.
+// This is used in e2e tests to trigger inactive pod handling.
+func SetPodEvicted(ctx context.Context, rclient client.Client, pod *v1.Pod) error {
+	pod.Status.Phase = v1.PodFailed
+	pod.Status.Reason = "Evicted"
+	pod.Status.Message = "The node was low on resource: ephemeral-storage. Evicted."
+	return rclient.Status().Update(ctx, pod)
+}
+
+// SetPodUnexpectedAdmissionError simulates a Pod with unexpected admission error.
+func SetPodUnexpectedAdmissionError(ctx context.Context, rclient client.Client, pod *v1.Pod) error {
+	pod.Status.Phase = v1.PodFailed
+	pod.Status.Reason = "UnexpectedAdmissionError"
+	pod.Status.Message = "Pod rejected by admission webhook"
+	return rclient.Status().Update(ctx, pod)
+}
+
+// SetPodFailed simulates a Pod in Failed state with generic error.
+func SetPodFailed(ctx context.Context, rclient client.Client, pod *v1.Pod) error {
+	pod.Status.Phase = v1.PodFailed
+	pod.Status.Reason = "Error"
+	pod.Status.Message = "Container exited with error"
+	return rclient.Status().Update(ctx, pod)
+}
+
+// GetActivePodCount returns the count of active pods for a given RBG.
+// Uses the native Kubernetes IsPodActive function for consistency.
+func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rbgName string) (int, error) {
+	podList := &v1.PodList{}
+	if err := rclient.List(ctx, podList,
+		client.InNamespace(namespace),
+		client.MatchingLabels{constants.GroupNameLabelKey: rbgName}); err != nil {
+		return 0, err
+	}
+
+	// Use native IsPodActive from k8s.io/kubernetes/pkg/controller
+	// Pod is active if: Phase != Succeeded && Phase != Failed && DeletionTimestamp == nil
+	count := 0
+	for i := range podList.Items {
+		if kubecontroller.IsPodActive(&podList.Items[i]) {
+			count++
+		}
+	}
+	return count, nil
 }

@@ -1,6 +1,24 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package utils
 
-import corev1 "k8s.io/api/core/v1"
+import (
+	corev1 "k8s.io/api/core/v1"
+)
 
 // PodRunningAndReady checks if the pod condition is running and marked as ready.
 func PodRunningAndReady(pod corev1.Pod) bool {
@@ -39,33 +57,6 @@ func getPodConditionFromList(conditions []corev1.PodCondition, conditionType cor
 		}
 	}
 	return -1, nil
-}
-
-// ContainerRestarted return true when there is any container in the pod that gets restarted
-func ContainerRestarted(pod *corev1.Pod) bool {
-	// if pod is nil, no containers restarted.
-	if pod == nil {
-		return false
-	}
-	if pod.Status.Phase == corev1.PodRunning || pod.Status.Phase == corev1.PodPending {
-		for j := range pod.Status.InitContainerStatuses {
-			stat := pod.Status.InitContainerStatuses[j]
-			if stat.RestartCount > 0 {
-				return true
-			}
-		}
-		for j := range pod.Status.ContainerStatuses {
-			// if engine runtime restart, do not need to recreate rbg.
-			if pod.Status.ContainerStatuses[j].Name == "patio-runtime" {
-				continue
-			}
-			stat := pod.Status.ContainerStatuses[j]
-			if stat.RestartCount > 0 {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // PodDeleted checks if the worker pod has been deleted

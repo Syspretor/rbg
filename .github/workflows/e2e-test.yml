@@ -1,0 +1,388 @@
+name: E2E Test
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  GO_VERSION: 1.24.1
+  KIND_VERSION: v0.31.0
+  KUBERNETES_VERSION: v1.31.12
+  VOLCANO_VERSION: v1.12.0
+  LWS_VERSION: v0.7.0
+  SCHEDULER_PLUGINS_VERSION: v0.32.7
+
+# Declare default permissions as read only.
+permissions: read-all
+
+jobs:
+  check-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.filter.outputs.should_run }}
+      deploy_changed: ${{ steps.filter.outputs.deploy_changed }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Check if changes require e2e tests
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            BASE_REF="origin/${{ github.base_ref }}"
+          else
+            BASE_REF="HEAD^1"
+          fi
+
+          # Get changed files
+          CHANGED_FILES=$(git diff --name-only $BASE_REF HEAD)
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          # Check if deploy directory or this workflow file changed (for manifest E2E)
+          DEPLOY_CHANGED="false"
+          if echo "$CHANGED_FILES" | grep -qE '^deploy/'; then
+            DEPLOY_CHANGED="true"
+            echo "Deploy directory changed, will run manifest E2E"
+          elif echo "$CHANGED_FILES" | grep -qE '^\.github/workflows/e2e-test\.yml$'; then
+            DEPLOY_CHANGED="true"
+            echo "e2e-test workflow changed, will run manifest E2E"
+          fi
+          echo "deploy_changed=$DEPLOY_CHANGED" >> $GITHUB_OUTPUT
+
+          # Define patterns for files that DO require e2e tests (code and config files)
+          # - Go source code (*.go)
+          # - Build files (Makefile, Dockerfile, go.mod, go.sum)
+          # - CRD definitions (config/crd/**/*.yaml)
+          # - RBAC config (config/rbac/**/*.yaml)
+          # - Helm charts (deploy/helm/**/*.yaml)
+          # - CI workflows (.github/workflows/*.yml)
+          # - Test files (test/**/*)
+          CODE_PATTERNS='\.go$|^Makefile|^Dockerfile|go\.mod|go\.sum|\.sh$|^config/crd/|^config/rbac/|^deploy/helm/|^\.github/workflows/|^test/'
+          SKIP_DIRS='^(examples|doc|python)/'
+
+          SHOULD_RUN="false"
+
+          if [ -n "$CHANGED_FILES" ]; then
+            # Filter out files in skip directories
+            NON_SKIP_FILES=$(echo "$CHANGED_FILES" | grep -vE "$SKIP_DIRS" || true)
+
+            if [ -z "$NON_SKIP_FILES" ]; then
+              echo "All changed files are in skip directories ($SKIP_DIRS). Skipping e2e tests."
+            else
+              # Check if any non-skipped file matches code patterns
+              CODE_FILES=$(echo "$NON_SKIP_FILES" | grep -E "$CODE_PATTERNS" || true)
+
+              if [ -n "$CODE_FILES" ]; then
+                echo "Found code/config files that require e2e tests:"
+                echo "$CODE_FILES"
+                SHOULD_RUN="true"
+              else
+                echo "All changed files are non-code files (docs, examples, yaml configs, etc). Skipping e2e tests."
+              fi
+            fi
+          else
+            # No changed files detected, run tests by default
+            SHOULD_RUN="true"
+          fi
+
+          echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
+
+  e2e-test:
+    needs: check-changes
+    if: needs.check-changes.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GOPATH: ${{ github.workspace }}
+      GO111MODULE: on
+    defaults:
+      run:
+        working-directory: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Create Kind cluster
+        run: |
+          kind create cluster --name rbgs-e2e --image kindest/node:${{ env.KUBERNETES_VERSION }} --wait 5m
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Install LeaderWorkerSet CRDs
+        run: |
+          kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/${{ env.LWS_VERSION }}/manifests.yaml
+          kubectl get crd leaderworkersets.leaderworkerset.x-k8s.io
+
+      - name: Install Scheduler Plugins
+        run: |
+          helm install scheduler-plugins https://github.com/kubernetes-sigs/scheduler-plugins/releases/download/${{ env.SCHEDULER_PLUGINS_VERSION }}/scheduler-plugins-${SCHEDULER_PLUGINS_VERSION#v}.tgz \
+            --create-namespace \
+            --namespace scheduler-plugins \
+            --wait \
+            --timeout 300s
+          kubectl get pods -n scheduler-plugins
+
+      - name: Install Volcano Scheduler
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/volcano-sh/volcano/${{ env.VOLCANO_VERSION }}/installer/volcano-development.yaml
+          kubectl wait --for=condition=ready pod -l app=volcano-scheduler -n volcano-system --timeout=300s
+          kubectl wait --for=condition=ready pod -l app=volcano-admission -n volcano-system --timeout=300s
+          kubectl wait --for=condition=ready pod -l app=volcano-controller -n volcano-system --timeout=300s
+          kubectl get pods -n volcano-system
+
+      - name: Install Helm
+        run: |
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm version
+
+      - name: Build and load controller image
+        run: |
+          make manifests
+          make docker-build-controller TAG=e2e-test
+          docker images | grep rbgs-controller || true
+          kind load docker-image docker.io/rolebasedgroup/rbgs-controller:e2e-test --name rbgs-e2e
+
+      - name: Build and load CRD Upgrader image
+        run: |
+          make docker-build-crd-upgrader TAG=e2e-test
+          docker images | grep rbgs-upgrade-crd || true
+          kind load docker-image docker.io/rolebasedgroup/rbgs-upgrade-crd:e2e-test --name rbgs-e2e
+
+      - name: Deploy controller
+        run: |
+          helm upgrade --install rbgs deploy/helm/rbgs \
+            --create-namespace \
+            --namespace rbgs-system \
+            --set image.tag=e2e-test \
+            --set crdUpgrade.tag=e2e-test \
+            --set portAllocator.enabled=true \
+            --wait
+          kubectl get deploy -n rbgs-system
+
+      - name: Wait for controller to be ready
+        run: |
+          kubectl wait --for=condition=available --timeout=300s deployment/rbgs-controller-manager -n rbgs-system
+
+      - name: Verify CRDs are installed
+        run: |
+          echo "Verifying CRDs from config/crd/bases are installed..."
+          for f in config/crd/bases/*.yaml; do
+            CRD_NAME=$(grep '^  name:' "$f" | head -1 | awk '{print $2}')
+            echo "Checking CRD: $CRD_NAME"
+            kubectl get crd "$CRD_NAME"
+          done
+          echo "All CRDs verified successfully"
+
+      - name: Pre-load e2e test images
+        run: |
+          # Pull and load e2e test images to avoid image pull timeout during tests
+          E2E_IMAGES=(
+            "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
+            "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
+          )
+          for image in "${E2E_IMAGES[@]}"; do
+            echo "Pulling image: ${image}"
+            docker pull "${image}"
+            echo "Loading image into Kind: ${image}"
+            kind load docker-image "${image}" --name rbgs-e2e
+          done
+          echo "All e2e test images loaded successfully"
+
+      - name: Run E2E tests
+        run: |
+          make test-e2e
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Controller logs ==="
+          kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=200 || true
+          echo "=== Controller previous logs (if restarted) ==="
+          kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=200 --previous 2>/dev/null || true
+          echo "=== Controller pod describe ==="
+          kubectl describe pods -n rbgs-system -l control-plane=rbgs-controller || true
+          echo "=== All pods in test namespaces ==="
+          kubectl get pods -A | grep test-ns || true
+          echo "=== Events ==="
+          kubectl get events -A --sort-by='.lastTimestamp' | tail -50 || true
+          echo "=== Kind cluster info ==="
+          kind export logs /tmp/kind-logs --name rbgs-e2e || true
+
+      - name: Upload Kind logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-logs
+          path: /tmp/kind-logs
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kind delete cluster --name rbgs-e2e || true
+
+  # E2E test using manifest installation (only runs when deploy/ changes)
+  e2e-test-manifest:
+    needs: check-changes
+    if: needs.check-changes.outputs.deploy_changed == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GOPATH: ${{ github.workspace }}
+      GO111MODULE: on
+    defaults:
+      run:
+        working-directory: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+    steps:
+      - name: Set up Go
+        uses: actions/setup-go@v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Checkout code
+        uses: actions/checkout@v5.0.0
+        with:
+          path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
+
+      - name: Install Kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/${{ env.KIND_VERSION }}/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Create Kind cluster
+        run: |
+          kind create cluster --name rbgs-manifest-e2e --image kindest/node:${{ env.KUBERNETES_VERSION }} --wait 5m
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Install LeaderWorkerSet CRDs
+        run: |
+          kubectl apply --server-side -f https://github.com/kubernetes-sigs/lws/releases/download/${{ env.LWS_VERSION }}/manifests.yaml
+          kubectl get crd leaderworkersets.leaderworkerset.x-k8s.io
+
+      - name: Install Scheduler Plugins
+        run: |
+          helm install scheduler-plugins https://github.com/kubernetes-sigs/scheduler-plugins/releases/download/${{ env.SCHEDULER_PLUGINS_VERSION }}/scheduler-plugins-${SCHEDULER_PLUGINS_VERSION#v}.tgz \
+            --create-namespace \
+            --namespace scheduler-plugins \
+            --wait \
+            --timeout 300s
+          kubectl get pods -n scheduler-plugins
+
+      - name: Install Volcano Scheduler
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/volcano-sh/volcano/${{ env.VOLCANO_VERSION }}/installer/volcano-development.yaml
+          kubectl wait --for=condition=ready pod -l app=volcano-scheduler -n volcano-system --timeout=300s
+          kubectl wait --for=condition=ready pod -l app=volcano-admission -n volcano-system --timeout=300s
+          kubectl wait --for=condition=ready pod -l app=volcano-controller -n volcano-system --timeout=300s
+          kubectl get pods -n volcano-system
+
+      - name: Validate and deploy manifests
+        run: |
+          # Validate CRD conversion webhook configuration in committed manifests
+          echo "Validating CRD conversion webhook configuration..."
+
+          CONV_COUNT=$(grep -c "conversion:" deploy/kubectl/manifests.yaml || echo "0")
+          WEBHOOK_COUNT=$(grep -c "strategy: Webhook" deploy/kubectl/manifests.yaml || echo "0")
+
+          if [ "$CONV_COUNT" -lt 2 ] || [ "$WEBHOOK_COUNT" -lt 2 ]; then
+            echo "::error::CRDs missing conversion webhook configuration!"
+            echo "Expected 2 conversion webhook entries (for RoleBasedGroup and RoleBasedGroupSet)"
+            echo "Found: conversion=$CONV_COUNT, webhook strategy=$WEBHOOK_COUNT"
+            echo ""
+            echo "Please run 'make build-installer' locally and commit the updated manifests."
+            exit 1
+          fi
+
+          echo "Manifests validation passed - CRDs contain correct conversion webhook configuration"
+
+          # Apply manifests with server-side apply (required for large CRD annotations)
+          kubectl apply --server-side -f deploy/kubectl/manifests.yaml
+
+          kubectl get deploy -n rbgs-system
+
+      - name: Enable portAllocator on controller deployment
+        run: |
+          # Patch controller deployment to enable portAllocator, equivalent to helm --set portAllocator.enabled=true
+          kubectl patch deployment rbgs-controller-manager -n rbgs-system --type=json -p='[
+            {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--enable-port-allocator=true"},
+            {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--port-allocate-strategy=random"},
+            {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--start-port=30000"},
+            {"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--port-range=5000"}
+          ]'
+
+      - name: Wait for controller to be ready
+        run: |
+          kubectl wait --for=condition=available --timeout=300s deployment/rbgs-controller-manager -n rbgs-system
+
+      - name: Verify CRDs are installed
+        run: |
+          echo "Verifying CRDs are installed..."
+          kubectl get crd rolebasedgroups.workloads.x-k8s.io || true
+          kubectl get crd coordinatedpolicies.workloads.x-k8s.io || true
+          kubectl get crd roleinstances.workloads.x-k8s.io || true
+          echo "CRDs verified successfully"
+
+      - name: Pre-load e2e test images
+        run: |
+          E2E_IMAGES=(
+            "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
+            "registry-cn-hangzhou.ack.aliyuncs.com/dev/patio-runtime:v0.2.0"
+          )
+          for image in "${E2E_IMAGES[@]}"; do
+            echo "Pulling image: ${image}"
+            docker pull "${image}"
+            echo "Loading image into Kind: ${image}"
+            kind load docker-image "${image}" --name rbgs-manifest-e2e
+          done
+          echo "All e2e test images loaded successfully"
+
+      - name: Run E2E tests
+        run: |
+          make test-e2e
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Controller logs ==="
+          kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=200 || true
+          echo "=== Controller previous logs (if restarted) ==="
+          kubectl logs -n rbgs-system -l control-plane=rbgs-controller --tail=200 --previous 2>/dev/null || true
+          echo "=== Controller pod describe ==="
+          kubectl describe pods -n rbgs-system -l control-plane=rbgs-controller || true
+          echo "=== All pods in test namespaces ==="
+          kubectl get pods -A | grep test-ns || true
+          echo "=== Events ==="
+          kubectl get events -A --sort-by='.lastTimestamp' | tail -50 || true
+          echo "=== Kind cluster info ==="
+          kind export logs /tmp/kind-manifest-logs --name rbgs-manifest-e2e || true
+
+      - name: Upload Kind logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-manifest-logs
+          path: /tmp/kind-manifest-logs
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kind delete cluster --name rbgs-manifest-e2e || true

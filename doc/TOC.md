@@ -3,46 +3,57 @@
 ## TOC
 
 - Overview
-    - [Introduction](../README.md)
+  - [Introduction](../README.md)
 - Installation
-    - [Kubectl](./install.md)
-    - [Helm](./install.md)
+  - [Kubectl](./install.md)
+  - [Helm](./install.md)
+- Quick Start
+  - [Quick Start Guide](./quick_start.md)
 - Key Features
-    - [Multi Roles](features/multiroles.md)
-    - [Autoscaling](features/autoscaler.md)
-    - [Update Strategy](features/update-strategy.md)
-    - [Failure Handling](features/failure-handling.md)
-    - [Gang Scheduling](features/gang-scheduling.md)
-    - [Monitoring](features/monitoring.md)
-    - [Exclusive Topology](features/exclusive-topology.md)
-    - [Revision](features/revision.md)
+  - [Multi Roles](features/multiroles.md)
+  - [Workload Patterns](features/patterns.md)
+  - [Role Dependencies](features/role-dependencies.md)
+  - [Role Templates](features/role-templates.md)
+  - [Autoscaling](features/autoscaler.md)
+  - [Update Strategy](features/update-strategy.md)
+  - [Coordinated Policy](features/coordinated-policy.md)
+  - [Failure Handling](features/failure-handling.md)
+  - [Gang Scheduling](features/gang-scheduling.md)
+  - [Exclusive Topology](features/exclusive-topology.md)
+  - [Engine Runtime Profile](features/engine-runtime.md)
+  - [Ecosystem Integration](features/ecosystem-integration.md)
+  - [Revision](features/revision.md)
+  - [Monitoring](features/monitoring.md)
+  - [Instance](features/instance.md)
 - Reference
-    - [Labels, Annotations and Environment Variables](reference/variables.md)
-    - [RoleBasedGroup API](reference/api.md)
+  - [Labels, Annotations and Environment Variables](reference/variables.md)
+  - [RoleBasedGroup API](reference/api.md)
+- Development
+  - [How to Develop](dev/how_to_develop.md)
+  - [How to Release](dev/how_to_release.md)
 - Examples
-    - Deploying Inference Service
-        - Single Node
-            - [sglang](../examples/single-node/sglang.yaml)
-            - [Others](../examples/single-node/vllm.yaml)
+  - Basic Examples
+    - [Standalone Pattern](../examples/basic/rbg/patterns/standalone-pattern.yaml)
+    - [Leader-Worker Pattern](../examples/basic/rbg/patterns/leader-worker-pattern.yaml)
+    - [Custom Components Pattern](../examples/basic/rbg/patterns/custom-components-pattern.yaml)
+    - [Role Dependencies](../examples/basic/rbg/dependency/role-dependencies.yaml)
+    - [Role Templates](../examples/basic/rbg/role-temlate/rbg-with-roletemplates.yaml)
+    - [Rolling Update](../examples/basic/rbg/update-strategy/rolling-update.yaml)
+    - [Restart Policy](../examples/basic/rbg/restart-policy/restart-policy.yaml)
+    - [Gang Scheduling (Scheduler Plugins)](../examples/basic/rbg/scheduling/scheduler-plugins-gang.yaml)
+    - [Gang Scheduling (Volcano)](../examples/basic/rbg/scheduling/volcano-gang.yaml)
+    - [Scaling Adapter with HPA](../examples/basic/rbg/scaling/scaling-adapter-with-hpa.yaml)
+    - [Coordinated Rolling Update](../examples/basic/coordinated-policy/coordinated-rolling-update.yaml)
+    - [Coordinated Scaling](../examples/basic/coordinated-policy/coordinated-scaling.yaml)
+    - [Engine Runtime Profile](../examples/basic/engine-runtime/engine-runtime-profile.yaml)
 
-        - Multi Node
-            - [sglang](../examples/multi-nodes/sglang.yaml)
-            - [Others](../examples/multi-nodes/vllm.yaml)
+  - Inference Examples
+    - [Aggregated Standalone](../examples/inference/agg-standalone.yaml)
+    - [Aggregated Leader-Worker](../examples/inference/agg-leader-worker.yaml)
+    - [PD-Disaggregated Standalone](../examples/inference/pd-disagg-standalone.yaml)
+    - [PD-Disaggregated Leader-Worker](../examples/inference/pd-disagg-leader-worker.yaml)
 
-        - PD-Disagg
-            - [sglang](../examples/pd-disagg/sglang/sgl.md)
-            - [Others](../examples/pd-disagg/dynamo/README.md)
-
-    - Advanced Features
-        - Multi-roles
-            - [Multirole with StatefulSet and Deployment](../examples/basics/rbg-base.yaml)
-            - [Multirole with LeaderWorkerSet](../examples/multi-nodes/sglang.yaml)
-            - [Multirole with startup dependency](../examples/basics/rbg-base.yaml)
-        - Update Strategy
-            - [Rolling Update](../examples/basics/rolling-update.yaml)
-        - Failure Handling
-            - [Restart Policy](../examples/basics/restart-policy.yaml)
-        - Scheduling
-            - [Gang Scheduling](../examples/basics/gang-scheduling.yaml)
-        - Monitoring
-            - [Prometheus](features/monitoring.md)
+  - Ecosystem Integration
+    - [Dynamo Integration](../examples/inference/ecosystem/dynamo/)
+    - [Mooncake Integration](../examples/inference/ecosystem/mooncake/)
+    - [Infrastructure (ETCD, NATS)](../examples/inference/ecosystem/)

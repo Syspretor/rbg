@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2026 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,8 +20,10 @@ package v1alpha1
 // RoleBasedGroupSpecApplyConfiguration represents a declarative configuration of the RoleBasedGroupSpec type for use
 // with apply.
 type RoleBasedGroupSpecApplyConfiguration struct {
-	Roles          []RoleSpecApplyConfiguration      `json:"roles,omitempty"`
-	PodGroupPolicy *PodGroupPolicyApplyConfiguration `json:"podGroupPolicy,omitempty"`
+	Roles                    []RoleSpecApplyConfiguration      `json:"roles,omitempty"`
+	RoleTemplates            []RoleTemplateApplyConfiguration  `json:"roleTemplates,omitempty"`
+	PodGroupPolicy           *PodGroupPolicyApplyConfiguration `json:"podGroupPolicy,omitempty"`
+	CoordinationRequirements []CoordinationApplyConfiguration  `json:"coordination,omitempty"`
 }
 
 // RoleBasedGroupSpecApplyConfiguration constructs a declarative configuration of the RoleBasedGroupSpec type for use with
@@ -43,10 +45,36 @@ func (b *RoleBasedGroupSpecApplyConfiguration) WithRoles(values ...*RoleSpecAppl
 	return b
 }
 
+// WithRoleTemplates adds the given value to the RoleTemplates field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the RoleTemplates field.
+func (b *RoleBasedGroupSpecApplyConfiguration) WithRoleTemplates(values ...*RoleTemplateApplyConfiguration) *RoleBasedGroupSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithRoleTemplates")
+		}
+		b.RoleTemplates = append(b.RoleTemplates, *values[i])
+	}
+	return b
+}
+
 // WithPodGroupPolicy sets the PodGroupPolicy field in the declarative configuration to the given value
 // and returns the receiver, so that objects can be built by chaining "With" function invocations.
 // If called multiple times, the PodGroupPolicy field is set to the value of the last call.
 func (b *RoleBasedGroupSpecApplyConfiguration) WithPodGroupPolicy(value *PodGroupPolicyApplyConfiguration) *RoleBasedGroupSpecApplyConfiguration {
 	b.PodGroupPolicy = value
+	return b
+}
+
+// WithCoordinationRequirements adds the given value to the CoordinationRequirements field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the CoordinationRequirements field.
+func (b *RoleBasedGroupSpecApplyConfiguration) WithCoordinationRequirements(values ...*CoordinationApplyConfiguration) *RoleBasedGroupSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithCoordinationRequirements")
+		}
+		b.CoordinationRequirements = append(b.CoordinationRequirements, *values[i])
+	}
 	return b
 }

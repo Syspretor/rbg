@@ -32,12 +32,39 @@ spec:
             - --metrics-bind-address=:8443
             - --leader-elect
             - --health-probe-bind-address=:8081
+            {{- if .Values.controllerTuning }}
+            - --max-concurrent-reconciles={{ .Values.controllerTuning.maxConcurrentReconciles | default 10 }}
+            - --kube-api-qps={{ .Values.controllerTuning.kubeApiQPS | default 20 }}
+            - --kube-api-burst={{ .Values.controllerTuning.kubeApiBurst | default 30 }}
+            {{- end }}
+            {{- if .Values.portAllocator.enabled }}
+            - --enable-port-allocator=true
+            - --port-allocate-strategy={{ .Values.portAllocator.strategy | default "random" }}
+            - --start-port={{ .Values.portAllocator.startPort | default 30000 }}
+            - --port-range={{ .Values.portAllocator.portRange | default 5000 }}
+            {{- end }}
+            - --scheduler-name={{ .Values.schedulerName | default "scheduler-plugins" }}
+            {{- if .Values.pprof.enabled }}
+            - --enable-pprof=true
+            - --pprof-bind-address={{ .Values.pprof.bindAddress | default ":6060" }}
+            {{- end }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           command:
             - /manager
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.pprof.enabled }}
+          ports:
+            - name: pprof
+              containerPort: {{ .Values.pprof.containerPort | default 6060 }}
+              protocol: TCP
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

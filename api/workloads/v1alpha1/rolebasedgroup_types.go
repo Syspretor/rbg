@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2025 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,6 +25,46 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
+// RoleTemplate defines a reusable Pod template that can be referenced by roles.
+type RoleTemplate struct {
+	// Name is the unique identifier for this template.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// Template defines the Pod template specification.
+	// +kubebuilder:validation:Required
+	Template corev1.PodTemplateSpec `json:"template"`
+}
+
+// TemplateRef references a RoleTemplate defined in spec.roleTemplates.
+type TemplateRef struct {
+	// Name of the RoleTemplate to reference.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+}
+
+// TemplateSource defines either an inline template or a reference to a RoleTemplate.
+// Only one of its members may be specified.
+// +kubebuilder:validation:XValidation:rule="!(has(self.template) && has(self.templateRef))",message="template and templateRef are mutually exclusive"
+type TemplateSource struct {
+	// Template defines the Pod template specification inline.
+	// Required when templateRef is not set for non-InstanceSet workloads.
+	// +optional
+	Template *corev1.PodTemplateSpec `json:"template,omitempty"`
+
+	// TemplateRef references a RoleTemplate from spec.roleTemplates.
+	// When set, the Pod template is derived by merging the referenced template with templatePatch.
+	// Cannot be used together with template field.
+	// +optional
+	TemplateRef *TemplateRef `json:"templateRef,omitempty"`
+}
+
 // RoleBasedGroupSpec defines the desired state of RoleBasedGroup.
 type RoleBasedGroupSpec struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
@@ -36,8 +76,105 @@ type RoleBasedGroupSpec struct {
 	// +listMapKey=name
 	Roles []RoleSpec `json:"roles" patchStrategy:"merge" patchMergeKey:"name"`
 
+	// RoleTemplates defines reusable Pod templates that can be referenced by roles.
+	// +optional
+	// +patchMergeKey=name
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=name
+	RoleTemplates []RoleTemplate `json:"roleTemplates,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
+
 	// Configuration for the PodGroup to enable gang-scheduling via supported plugins.
 	PodGroupPolicy *PodGroupPolicy `json:"podGroupPolicy,omitempty"`
+
+	// CoordinationRequirements describes the requirements of coordination strategies for some specified roles.
+	// +patchMergeKey=name
+	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=name
+	CoordinationRequirements []Coordination `json:"coordination,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
+}
+
+// Coordination describes the requirements of coordination strategies for roles.
+type Coordination struct {
+	// Name of the coordination.
+	Name string `json:"name"`
+
+	// Roles that should be constrained by this coordination.
+	Roles []string `json:"roles"`
+
+	// RolloutStrategy describes the coordination strategies.
+	Strategy *CoordinationStrategy `json:"strategy,omitempty"`
+}
+
+type CoordinationStrategy struct {
+	// RollingUpdate defines the coordination strategies about rolling update.
+	RollingUpdate *CoordinationRollingUpdate `json:"rollingUpdate,omitempty"`
+
+	Scaling *CoordinationScaling `json:"scaling,omitempty"`
+}
+
+// ProgressionType defines how to wait for pods before proceeding to next batch.
+type ProgressionType string
+
+const (
+	// OrderScheduled means wait for all pods in current batch to be scheduled (have nodeName).
+	OrderScheduled ProgressionType = "OrderScheduled"
+
+	// OrderReady means wait for all pods in current batch to be ready.
+	OrderReady ProgressionType = "OrderReady"
+)
+
+// CoordinationScaling defines the scaling coordination strategy for progressive deployment.
+// It ensures that multiple roles are deployed in a coordinated manner to avoid resource imbalance.
+type CoordinationScaling struct {
+	// MaxSkew defines the maximum allowed difference in deployment progress between roles.
+	// For example, with 300 prefill and 100 decode replicas, if MaxSkew is "5%",
+	// the deployment progress difference cannot exceed 5%.
+	// - Round 1: prefill deploys to 300*5%=15 (5% progress)
+	// - Round 2: decode deploys to 100*10%=10 (10% progress, diff with prefill is 5%)
+	// - Round 3: prefill deploys to 300*15%=45 (15% progress)
+	// Only percentage values are supported.
+	//
+	// +kubebuilder:validation:Pattern=`^([0-9]|[1-9][0-9]|100)%$`
+	// +optional
+	MaxSkew *string `json:"maxSkew,omitempty"`
+
+	// Progression defines the progression strategy for scaling.
+	// It controls when to proceed to the next batch of deployment.
+	// - OrderScheduled: Wait for all pods in current batch to be scheduled (have nodeName).
+	// - OrderReady: Wait for all pods in current batch to be ready.
+	// Defaults to OrderScheduled.
+	//
+	// +kubebuilder:validation:Enum=OrderScheduled;OrderReady
+	// +kubebuilder:default=OrderScheduled
+	// +optional
+	Progression *ProgressionType `json:"progression,omitempty"`
+}
+
+// CoordinationRollingUpdate describes the rolling update coordination strategy.
+type CoordinationRollingUpdate struct {
+	// MaxSkew defines the max skew requirement about updated replicas between the roles when rolling update.
+	// For example, one RoleBasedGroup with (200 prefills, 100 decodes) will have the
+	// constraint `abs(updated_prefills/200 - updated_decodes/100) <= MaxSkew`.
+	// Only support percentage value, and defaults to nil.
+	//
+	// +kubebuilder:validation:Pattern=`^([0-9]|[1-9][0-9]|100)%$`
+	MaxSkew *string `json:"maxSkew,omitempty"`
+
+	// Partition indicates the replicas at which the role should be partitioned for rolling update.
+	// If Partition is not nil, the Partition of the roles' rolloutStrategy will be overridden by this field.
+	// Only support percentage value, and defaults to nil.
+	//
+	// +kubebuilder:validation:Pattern=`^([0-9]|[1-9][0-9]|100)%$`
+	Partition *string `json:"partition,omitempty"`
+
+	// MaxUnavailable defines the updating step during rolling. If MaxUnavailable is not nil,
+	// the MaxUnavailable of the roles' rolloutStrategy will be overridden by this field.
+	// Only support percentage value, and defaults to nil.
+	//
+	// +kubebuilder:validation:Pattern=`^([0-9]|[1-9][0-9]|100)%$`
+	MaxUnavailable *string `json:"maxUnavailable,omitempty"`
 }
 
 // PodGroupPolicy represents a PodGroup configuration for gang-scheduling.
@@ -98,6 +235,10 @@ type RolloutStrategy struct {
 
 // RollingUpdate defines the parameters to be used for RollingUpdateStrategyType.
 type RollingUpdate struct {
+	// Type indicates the type of the InstanceSetUpdateStrategy.
+	// Default is InPlaceIfPossible.
+	Type UpdateStrategyType `json:"type,omitempty"`
+
 	// Partition indicates the ordinal at which the role should be partitioned for updates.
 	// During a rolling update, all the groups from ordinal Partition to Replicas-1 will be updated.
 	// The groups from 0 to Partition-1 will not be updated.
@@ -110,7 +251,7 @@ type RollingUpdate struct {
 	//
 	// +optional
 	// +kubebuilder:default=0
-	Partition *int32 `json:"partition,omitempty"`
+	Partition *intstr.IntOrString `json:"partition,omitempty"`
 
 	// The maximum number of replicas that can be unavailable during the update.
 	// Value can be an absolute number (ex: 5) or a percentage of total replicas at the start of update (ex: 10%).
@@ -125,7 +266,7 @@ type RollingUpdate struct {
 	//
 	// +kubebuilder:validation:XIntOrString
 	// +kubebuilder:default=1
-	MaxUnavailable intstr.IntOrString `json:"maxUnavailable,omitempty"`
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
 
 	// The maximum number of replicas that can be scheduled above the original number of
 	// replicas.
@@ -141,15 +282,41 @@ type RollingUpdate struct {
 	//
 	// +kubebuilder:validation:XIntOrString
 	// +kubebuilder:default=0
-	MaxSurge intstr.IntOrString `json:"maxSurge,omitempty"`
+	MaxSurge *intstr.IntOrString `json:"maxSurge,omitempty"`
+
+	// Paused indicates that the InstanceSet is paused.
+	// Default value is false
+	Paused bool `json:"paused,omitempty"`
+
+	// InPlaceUpdateStrategy contains strategies for in-place update.
+	InPlaceUpdateStrategy *InPlaceUpdateStrategy `json:"inPlaceUpdateStrategy,omitempty"`
 }
 
 // RoleSpec defines the specification for a role in the group
+// +kubebuilder:validation:XValidation:rule="!has(self.templateRef) || !has(self.workload) || self.workload.kind != 'InstanceSet'",message="templateRef is not supported for InstanceSet workloads"
+// +kubebuilder:validation:XValidation:rule="!has(self.templateRef) || !has(self.workload) || self.workload.kind != 'LeaderWorkerSet'",message="templateRef is not supported for LeaderWorkerSet workloads"
+// +kubebuilder:validation:XValidation:rule="(has(self.template) != has(self.templateRef)) || (has(self.workload) && self.workload.kind == 'InstanceSet')",message="template or templateRef must be set for non-InstanceSet workloads"
+// Note: "templatePatch is only valid when templateRef is set" validation is done in controller
+// because templatePatch is runtime.RawExtension (x-kubernetes-preserve-unknown-fields) which CEL cannot inspect
 type RoleSpec struct {
 	// Unique identifier for the role
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
+
+	// Map of string keys and values that can be used to organize and categorize
+	// (scope and select) objects. May match selectors of replication controllers
+	// and services.
+	// More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+
+	// Annotations is an unstructured key value map stored with a resource that may be
+	// set by external tools to store and retrieve arbitrary metadata. They are not
+	// queryable and should be preserved when modifying objects.
+	// More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations
+	// +optional
+	Annotations map[string]string `json:"annotations,omitempty"`
 
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=1
@@ -162,7 +329,7 @@ type RoleSpec struct {
 
 	// RestartPolicy defines the restart policy when pod failures happen.
 	// The default value is RecreateRoleInstanceOnPodRestart for LWS and None for STS & Deploy. Therefore, no default value is set.
-	// +kubebuilder:validation:Enum={None,RecreateRBGOnPodRestart,RecreateRoleInstanceOnPodRestart}
+	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
 	// +optional
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
 
@@ -175,13 +342,25 @@ type RoleSpec struct {
 	// +optional
 	Workload WorkloadSpec `json:"workload,omitempty"`
 
-	// Pod template specification
-	// +kubebuilder:validation:Required
-	Template corev1.PodTemplateSpec `json:"template"`
+	// TemplateSource defines the Pod template source, either inline or via reference.
+	// +optional
+	TemplateSource `json:",inline"`
+
+	// TemplatePatch specifies modifications to apply to the referenced template.
+	// Uses strategic merge patch semantics.
+	// Required when templateRef is set, use empty object ({}) for no modifications.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
+	TemplatePatch runtime.RawExtension `json:"templatePatch,omitempty"`
 
 	// LeaderWorkerSet template
 	// +optional
-	LeaderWorkerSet LeaderWorkerTemplate `json:"leaderWorkerSet,omitempty"`
+	LeaderWorkerSet *LeaderWorkerTemplate `json:"leaderWorkerSet,omitempty"`
+
+	// Components describe the components that will be created.
+	// +optional
+	Components []InstanceComponent `json:"components,omitempty"`
 
 	// +optional
 	ServicePorts []corev1.ServicePort `json:"servicePorts,omitempty"`
@@ -191,6 +370,13 @@ type RoleSpec struct {
 
 	// +optional
 	ScalingAdapter *ScalingAdapter `json:"scalingAdapter,omitempty"`
+
+	// MinReadySeconds is the minimum number of seconds for which a newly created pod/instance should be ready
+	// without any of its container crashing for it to be considered available.
+	// Defaults to 0 (pod will be considered available as soon as it is ready)
+	// +optional
+	// +kubebuilder:default=0
+	MinReadySeconds int32 `json:"minReadySeconds,omitempty" protobuf:"varint,9,opt,name=minReadySeconds"`
 }
 
 type WorkloadSpec struct {
@@ -234,13 +420,13 @@ type LeaderWorkerTemplate struct {
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
-	PatchLeaderTemplate runtime.RawExtension `json:"patchLeaderTemplate,omitempty"`
+	PatchLeaderTemplate *runtime.RawExtension `json:"patchLeaderTemplate,omitempty"`
 
 	// PatchWorkerTemplate indicates patching WorkerTemplate.
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:Schemaless
-	PatchWorkerTemplate runtime.RawExtension `json:"patchWorkerTemplate,omitempty"`
+	PatchWorkerTemplate *runtime.RawExtension `json:"patchWorkerTemplate,omitempty"`
 }
 
 type ScalingAdapter struct {
@@ -258,6 +444,8 @@ type RoleBasedGroupStatus struct {
 	// Conditions track the condition of the RBG
 	// +patchMergeKey=type
 	// +patchStrategy=merge
+	// +listType=map
+	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
 	// Status of individual roles
@@ -274,6 +462,9 @@ type RoleStatus struct {
 
 	// Total number of desired replicas
 	Replicas int32 `json:"replicas"`
+
+	// Total number of updated replicas
+	UpdatedReplicas int32 `json:"updatedReplicas"`
 }
 
 // +genclient
@@ -296,7 +487,7 @@ type RoleBasedGroupConditionType string
 
 // These are built-in conditions of a RBG.
 const (
-	// RoleBasedGroupAvailable means the rbg is available, ie, at least the
+	// RoleBasedGroupReady means the rbg is available, ie, at least the
 	// minimum available groups are up and running.
 	RoleBasedGroupReady RoleBasedGroupConditionType = "Ready"
 
@@ -311,10 +502,6 @@ const (
 	// is true when the rbg is in upgrade process after the (leader/worker) template is updated. If only replicas is modified, it will
 	// not be considered as UpdateInProgress.
 	RoleBasedGroupRollingUpdateInProgress RoleBasedGroupConditionType = "RollingUpdateInProgress"
-
-	// RoleBasedGroupRestartInProgress means rbg is restarting. RestartInProgress
-	// is true when the rbg is in restart process after the pod is deleted or the container is restarted.
-	RoleBasedGroupRestartInProgress RoleBasedGroupConditionType = "RestartInProgress"
 )
 
 // +kubebuilder:object:root=true

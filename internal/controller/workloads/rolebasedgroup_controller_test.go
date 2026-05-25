@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2025 The RBG Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,6 +18,8 @@ package workloads
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -29,20 +31,305 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/sets"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
-
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	"sigs.k8s.io/rbgs/pkg/reconciler"
+
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/wrappers"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
+
+func Test_CalculateNextRollingTarget_WithNormalCases(t *testing.T) {
+	type testCase struct {
+		name            string
+		maxSkew         string
+		roles           sets.Set[string]
+		desiredReplicas map[string]int32
+		updatedReplicas map[string]int32
+	}
+
+	testCases := []testCase{
+		{
+			name:    "(200p, 100d): maxSkew=1%",
+			maxSkew: "1%",
+			roles:   sets.New[string]("prefill", "decode"),
+			desiredReplicas: map[string]int32{
+				"prefill": 200,
+				"decode":  100,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 20,
+				"decode":  0,
+			},
+		},
+		{
+			name:    "(200p, 100d): maxSkew=10%",
+			maxSkew: "10%",
+			roles:   sets.New[string]("prefill", "decode"),
+			desiredReplicas: map[string]int32{
+				"prefill": 200,
+				"decode":  100,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 71,
+				"decode":  53,
+			},
+		},
+		{
+			name:    "(3p, 1d): maxSkew=1%",
+			maxSkew: "1%",
+			roles:   sets.New[string]("prefill", "decode"),
+			desiredReplicas: map[string]int32{
+				"prefill": 3,
+				"decode":  1,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 1,
+				"decode":  1,
+			},
+		},
+		{
+			name:    "(7p, 5d): maxSkew=1%",
+			maxSkew: "1%",
+			roles:   sets.New[string]("prefill", "decode"),
+			desiredReplicas: map[string]int32{
+				"prefill": 7,
+				"decode":  5,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 2,
+				"decode":  1,
+			},
+		},
+		{
+			name:    "(1p, 1d): maxSkew=1%",
+			maxSkew: "1%",
+			roles:   sets.New[string]("prefill", "decode"),
+			desiredReplicas: map[string]int32{
+				"prefill": 1,
+				"decode":  1,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 0,
+				"decode":  0,
+			},
+		},
+		{
+			name:    "(10p, 10d): maxSkew=1%",
+			maxSkew: "1%",
+			roles:   sets.New[string]("prefill", "decode"),
+			desiredReplicas: map[string]int32{
+				"prefill": 10,
+				"decode":  10,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 2,
+				"decode":  0,
+			},
+		},
+		{
+			name:    "(10p, 10d, 10e): maxSkew=1%",
+			maxSkew: "1%",
+			roles:   sets.New[string]("prefill", "decode", "encoder"),
+			desiredReplicas: map[string]int32{
+				"prefill": 10,
+				"decode":  10,
+				"encoder": 10,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 1,
+				"decode":  2,
+				"encoder": 3,
+			},
+		},
+		{
+			name:    "(7p, 5d, 3e): maxSkew=1%",
+			maxSkew: "1%",
+			roles:   sets.New[string]("prefill", "decode", "encoder"),
+			desiredReplicas: map[string]int32{
+				"prefill": 7,
+				"decode":  5,
+				"encoder": 3,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 3,
+				"decode":  1,
+				"encoder": 1,
+			},
+		},
+		{
+			name:    "(7p, 5d, 3e): maxSkew=10%",
+			maxSkew: "10%",
+			roles:   sets.New[string]("prefill", "decode", "encoder"),
+			desiredReplicas: map[string]int32{
+				"prefill": 7,
+				"decode":  5,
+				"encoder": 3,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 1,
+				"decode":  1,
+				"encoder": 1,
+			},
+		},
+		{
+			name:    "(10p, 2d): maxSkew=10%",
+			maxSkew: "10%",
+			roles:   sets.New[string]("prefill", "decode"),
+			desiredReplicas: map[string]int32{
+				"prefill": 10,
+				"decode":  2,
+			},
+			updatedReplicas: map[string]int32{
+				"prefill": 0,
+				"decode":  0,
+			},
+		},
+	}
+
+	GetSkewAllowedBias := func(desired map[string]int32) int {
+		skewAllowedBias := 0
+		for _, replicas := range desired {
+			skewAllowed := int(math.Ceil(10000.0 / float64(replicas)))
+			if skewAllowed > skewAllowedBias {
+				skewAllowedBias = skewAllowed
+			}
+		}
+		return skewAllowedBias
+	}
+
+	GetCurrentSkew := func(fastUpdated, slowUpdated, fastDesired, slowDesired int32) int {
+		fastRatio := float64(fastUpdated) / float64(fastDesired)
+		slowRatio := float64(slowUpdated) / float64(slowDesired)
+		return int(math.Ceil(10000.0 * (fastRatio - slowRatio)))
+	}
+
+	CheckSkewSatisfied := func(fastUpdated, slowUpdated, fastDesired, slowDesired int32, maxSkew, skewAllowedBias int) bool {
+		currentSkew := GetCurrentSkew(fastUpdated, slowUpdated, fastDesired, slowDesired)
+		return currentSkew <= skewAllowedBias+maxSkew
+	}
+
+	CheckRollingSatisfied := func(updated, desired map[string]int32) bool {
+		for role, replicas := range desired {
+			if updated[role] < replicas {
+				return false
+			}
+		}
+		return true
+	}
+
+	for _, ts := range testCases {
+		t.Run(ts.name, func(t *testing.T) {
+			skewAllowedBias := GetSkewAllowedBias(ts.desiredReplicas)
+			for {
+				nextRollingTarget := calculateNextRollingTarget(&ts.maxSkew, ts.roles, ts.desiredReplicas, ts.updatedReplicas, ts.desiredReplicas)
+				t.Logf("%s calculated next rolling target: %v", ts.name, nextRollingTarget)
+				for role, newUpdated := range nextRollingTarget {
+					ts.updatedReplicas[role] = newUpdated
+				}
+
+				maxSkew, _ := utils.ParseIntStrAsNonZero(intstr.FromString(ts.maxSkew), 10000)
+				fast, slow := getFastestAndSlowestRole(ts.roles, ts.desiredReplicas, ts.updatedReplicas)
+				if !CheckSkewSatisfied(ts.updatedReplicas[fast], ts.updatedReplicas[slow], ts.desiredReplicas[fast], ts.desiredReplicas[slow], int(maxSkew), skewAllowedBias) {
+					t.Fatal("Skew is out of MaxSkew")
+				}
+				if CheckRollingSatisfied(ts.updatedReplicas, ts.desiredReplicas) {
+					break
+				}
+			}
+		})
+	}
+
+	for prefill := 1; prefill < 100; prefill++ {
+		for decode := 1; decode < 100; decode++ {
+			ts := testCase{
+				name:    fmt.Sprintf("(%d p, %d d): maxSkew=1%%", prefill, decode),
+				maxSkew: "1%",
+				roles:   sets.New[string]("prefill", "decode"),
+				desiredReplicas: map[string]int32{
+					"prefill": int32(prefill),
+					"decode":  int32(decode),
+				},
+				updatedReplicas: map[string]int32{
+					"prefill": 0,
+					"decode":  0,
+				},
+			}
+			t.Run(ts.name, func(t *testing.T) {
+				skewAllowedBias := GetSkewAllowedBias(ts.desiredReplicas)
+				for {
+					nextRollingTarget := calculateNextRollingTarget(&ts.maxSkew, ts.roles, ts.desiredReplicas, ts.updatedReplicas, ts.desiredReplicas)
+					t.Logf("%s calculated next rolling target: %v", ts.name, nextRollingTarget)
+					for role, newUpdated := range nextRollingTarget {
+						ts.updatedReplicas[role] = newUpdated
+					}
+
+					maxSkew, _ := utils.ParseIntStrAsNonZero(intstr.FromString(ts.maxSkew), 10000)
+					fast, slow := getFastestAndSlowestRole(ts.roles, ts.desiredReplicas, ts.updatedReplicas)
+					if !CheckSkewSatisfied(ts.updatedReplicas[fast], ts.updatedReplicas[slow], ts.desiredReplicas[fast], ts.desiredReplicas[slow], int(maxSkew), skewAllowedBias) {
+						t.Fatal("Skew is out of MaxSkew")
+					}
+					if CheckRollingSatisfied(ts.updatedReplicas, ts.desiredReplicas) {
+						break
+					}
+				}
+			})
+		}
+	}
+
+	for prefill := 1; prefill < 20; prefill++ {
+		for decode := 1; decode < 20; decode++ {
+			for prefillUpdated := 1; prefillUpdated <= prefill; prefillUpdated++ {
+				for decodeUpdated := 1; decodeUpdated <= decode; decodeUpdated++ {
+					ts := testCase{
+						name:    fmt.Sprintf("(%d p, %d d): maxSkew=1%%", prefill, decode),
+						maxSkew: "1%",
+						roles:   sets.New[string]("prefill", "decode"),
+						desiredReplicas: map[string]int32{
+							"prefill": int32(prefill),
+							"decode":  int32(decode),
+						},
+						updatedReplicas: map[string]int32{
+							"prefill": int32(prefillUpdated),
+							"decode":  int32(decodeUpdated),
+						},
+					}
+					t.Run(ts.name, func(t *testing.T) {
+						skewAllowedBias := GetSkewAllowedBias(ts.desiredReplicas)
+						for {
+							nextRollingTarget := calculateNextRollingTarget(&ts.maxSkew, ts.roles, ts.desiredReplicas, ts.updatedReplicas, ts.desiredReplicas)
+							t.Logf("%s calculated next rolling target: %v", ts.name, nextRollingTarget)
+							for role, newUpdated := range nextRollingTarget {
+								ts.updatedReplicas[role] = newUpdated
+							}
+
+							maxSkew, _ := utils.ParseIntStrAsNonZero(intstr.FromString(ts.maxSkew), 10000)
+							fast, slow := getFastestAndSlowestRole(ts.roles, ts.desiredReplicas, ts.updatedReplicas)
+							if !CheckSkewSatisfied(ts.updatedReplicas[fast], ts.updatedReplicas[slow], ts.desiredReplicas[fast], ts.desiredReplicas[slow], int(maxSkew), skewAllowedBias) {
+								t.Fatal("Skew is out of MaxSkew")
+							}
+							if CheckRollingSatisfied(ts.updatedReplicas, ts.desiredReplicas) {
+								break
+							}
+						}
+					})
+				}
+			}
+		}
+	}
+}
 
 func TestRoleBasedGroupReconciler_CheckCrdExists_Partial(t *testing.T) {
 	testScheme := runtime.NewScheme()
@@ -302,7 +589,7 @@ func Test_hasValidOwnerRef(t *testing.T) {
 func TestRoleBasedGroupReconciler_Reconcile(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(testScheme)
-	_ = workloadsv1alpha1.AddToScheme(testScheme)
+	_ = workloadsv1alpha2.AddToScheme(testScheme)
 
 	fakeRecorder := record.NewFakeRecorder(10)
 
@@ -327,7 +614,7 @@ func TestRoleBasedGroupReconciler_Reconcile(t *testing.T) {
 		{
 			name: "normal RBG",
 			obj: []client.Object{
-				wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
+				wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
 			},
 			request: reconcile.Request{
 				NamespacedName: types.NamespacedName{
@@ -340,14 +627,14 @@ func TestRoleBasedGroupReconciler_Reconcile(t *testing.T) {
 		{
 			name: "RBG with orphaned roles",
 			obj: []client.Object{
-				wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
+				wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
 				&appsv1.StatefulSet{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-rbg-orphaned-role",
 						Namespace: "default",
 						Labels: map[string]string{
-							workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-							workloadsv1alpha1.SetRoleLabelKey: "orphaned-role",
+							constants.GroupNameLabelKey: "test-rbg",
+							constants.RoleNameLabelKey:  "orphaned-role",
 						},
 						OwnerReferences: []metav1.OwnerReference{
 							{
@@ -384,10 +671,11 @@ func TestRoleBasedGroupReconciler_Reconcile(t *testing.T) {
 					Build()
 
 				r := &RoleBasedGroupReconciler{
-					client:    fakeClient,
-					apiReader: fakeClient,
-					scheme:    testScheme,
-					recorder:  fakeRecorder,
+					client:             fakeClient,
+					apiReader:          fakeClient,
+					scheme:             testScheme,
+					recorder:           fakeRecorder,
+					workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
 				}
 
 				logger := zap.New().WithValues("env", "unit-test")
@@ -412,9 +700,13 @@ func TestRoleBasedGroupReconciler_Reconcile(t *testing.T) {
 func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(testScheme)
-	_ = workloadsv1alpha1.AddToScheme(testScheme)
+	_ = workloadsv1alpha2.AddToScheme(testScheme)
 
-	rbg := &workloadsv1alpha1.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "workloads.x-k8s.io/v1alpha2",
+			Kind:       "RoleBasedGroup",
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-rbg",
 			Namespace: "default",
@@ -422,9 +714,9 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 		},
 	}
 
-	roleSpec := &workloadsv1alpha1.RoleSpec{
+	roleSpec := &workloadsv1alpha2.RoleSpec{
 		Name: "test-role",
-		ScalingAdapter: &workloadsv1alpha1.ScalingAdapter{
+		ScalingAdapter: &workloadsv1alpha2.ScalingAdapter{
 			Enable: true,
 		},
 	}
@@ -446,7 +738,7 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 			name: "Delete scaling adapter when disabled",
 			obj: []client.Object{
 				rbg,
-				&workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+				&workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      scale.GenerateScalingAdapterName(rbg.Name, roleSpec.Name),
 						Namespace: rbg.Namespace,
@@ -482,7 +774,7 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 
 				// Verify creation/deletion
 				adapterName := scale.GenerateScalingAdapterName(rbg.Name, roleSpec.Name)
-				adapter := &workloadsv1alpha1.RoleBasedGroupScalingAdapter{}
+				adapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
 				err = fakeClient.Get(
 					context.Background(), types.NamespacedName{
 						Name:      adapterName,
@@ -490,8 +782,29 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 					}, adapter,
 				)
 
-				if tt.expectCreate && err != nil {
-					t.Errorf("Expected scaling adapter to be created, but got error: %v", err)
+				if tt.expectCreate {
+					if err != nil {
+						t.Errorf("Expected scaling adapter to be created, but got error: %v", err)
+					} else {
+						// Verify the adapter has an owner reference to the RBG,
+						// which is required for .Owns() watch to trigger reconciliation.
+						var found bool
+						for _, ref := range adapter.OwnerReferences {
+							if ref.Name == rbg.Name && ref.UID == rbg.UID {
+								found = true
+								if ref.APIVersion != rbg.APIVersion {
+									t.Errorf("Expected owner ref APIVersion %q, got %q", rbg.APIVersion, ref.APIVersion)
+								}
+								if ref.Kind != rbg.Kind {
+									t.Errorf("Expected owner ref Kind %q, got %q", rbg.Kind, ref.Kind)
+								}
+								break
+							}
+						}
+						if !found {
+							t.Errorf("Expected owner reference with Name=%q UID=%q, got %v", rbg.Name, rbg.UID, adapter.OwnerReferences)
+						}
+					}
 				}
 
 				if tt.expectDelete && err == nil {
@@ -502,12 +815,215 @@ func TestRoleBasedGroupReconciler_ReconcileScalingAdapter(t *testing.T) {
 	}
 }
 
+func TestRoleBasedGroupReconciler_ReconcileScalingAdapter_Labels(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(testScheme)
+	_ = workloadsv1alpha2.AddToScheme(testScheme)
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+	}
+
+	tests := []struct {
+		name       string
+		roleSpec   *workloadsv1alpha2.RoleSpec
+		wantLabels map[string]string
+	}{
+		{
+			name: "user labels merged with controller labels",
+			roleSpec: &workloadsv1alpha2.RoleSpec{
+				Name: "engine",
+				ScalingAdapter: &workloadsv1alpha2.ScalingAdapter{
+					Enable: true,
+					Labels: map[string]string{
+						"kwota.meta.com/quota-allocation":      "my-qa",
+						"kwota.meta.com/workload-variant":      "gb200",
+						"kwota.meta.com/workload-variant-type": "Standalone",
+					},
+				},
+			},
+			wantLabels: map[string]string{
+				"kwota.meta.com/quota-allocation":      "my-qa",
+				"kwota.meta.com/workload-variant":      "gb200",
+				"kwota.meta.com/workload-variant-type": "Standalone",
+				constants.GroupNameLabelKey:            "test-rbg",
+				constants.RoleNameLabelKey:             "engine",
+			},
+		},
+		{
+			name: "controller labels take precedence over user labels",
+			roleSpec: &workloadsv1alpha2.RoleSpec{
+				Name: "engine",
+				ScalingAdapter: &workloadsv1alpha2.ScalingAdapter{
+					Enable: true,
+					Labels: map[string]string{
+						constants.GroupNameLabelKey: "user-override-attempt",
+						constants.RoleNameLabelKey:  "user-override-attempt",
+						"custom-label":              "custom-value",
+					},
+				},
+			},
+			wantLabels: map[string]string{
+				constants.GroupNameLabelKey: "test-rbg",
+				constants.RoleNameLabelKey:  "engine",
+				"custom-label":              "custom-value",
+			},
+		},
+		{
+			name: "no user labels - only controller labels",
+			roleSpec: &workloadsv1alpha2.RoleSpec{
+				Name: "engine",
+				ScalingAdapter: &workloadsv1alpha2.ScalingAdapter{
+					Enable: true,
+				},
+			},
+			wantLabels: map[string]string{
+				constants.GroupNameLabelKey: "test-rbg",
+				constants.RoleNameLabelKey:  "engine",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(rbg.DeepCopy()).
+				Build()
+
+			r := &RoleBasedGroupReconciler{
+				client:    fakeClient,
+				apiReader: fakeClient,
+				scheme:    testScheme,
+			}
+
+			err := r.ReconcileScalingAdapter(context.Background(), rbg, tt.roleSpec)
+			if err != nil {
+				t.Fatalf("ReconcileScalingAdapter() unexpected error: %v", err)
+			}
+
+			adapterName := scale.GenerateScalingAdapterName(rbg.Name, tt.roleSpec.Name)
+			adapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
+			if err := fakeClient.Get(context.Background(), types.NamespacedName{
+				Name: adapterName, Namespace: rbg.Namespace,
+			}, adapter); err != nil {
+				t.Fatalf("expected RBGSA to exist: %v", err)
+			}
+
+			if len(adapter.Labels) != len(tt.wantLabels) {
+				t.Errorf("expected %d labels, got %d: %v", len(tt.wantLabels), len(adapter.Labels), adapter.Labels)
+			}
+			for k, want := range tt.wantLabels {
+				if got := adapter.Labels[k]; got != want {
+					t.Errorf("label %q: expected %q, got %q", k, want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRoleBasedGroupReconciler_ReconcileScalingAdapter_LabelUpdate(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(testScheme)
+	_ = workloadsv1alpha2.AddToScheme(testScheme)
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-rbg",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+	}
+
+	roleName := "engine"
+	adapterName := scale.GenerateScalingAdapterName(rbg.Name, roleName)
+
+	// Pre-existing RBGSA with only controller labels (no user labels).
+	existingAdapter := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      adapterName,
+			Namespace: rbg.Namespace,
+			Labels: map[string]string{
+				constants.GroupNameLabelKey: rbg.Name,
+				constants.RoleNameLabelKey:  roleName,
+			},
+		},
+		Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+			ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
+				Name: rbg.Name,
+				Role: roleName,
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(rbg.DeepCopy(), existingAdapter).
+		Build()
+
+	r := &RoleBasedGroupReconciler{
+		client:    fakeClient,
+		apiReader: fakeClient,
+		scheme:    testScheme,
+	}
+
+	// Reconcile with new user labels — should update the existing adapter.
+	roleSpec := &workloadsv1alpha2.RoleSpec{
+		Name: roleName,
+		ScalingAdapter: &workloadsv1alpha2.ScalingAdapter{
+			Enable: true,
+			Labels: map[string]string{
+				"kwota.meta.com/quota-allocation": "my-qa",
+				"kwota.meta.com/workload-variant": "gb200",
+			},
+		},
+	}
+
+	err := r.ReconcileScalingAdapter(context.Background(), rbg, roleSpec)
+	if err != nil {
+		t.Fatalf("ReconcileScalingAdapter() unexpected error: %v", err)
+	}
+
+	// Verify labels were updated on the existing adapter.
+	updated := &workloadsv1alpha2.RoleBasedGroupScalingAdapter{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{
+		Name: adapterName, Namespace: rbg.Namespace,
+	}, updated); err != nil {
+		t.Fatalf("expected RBGSA to exist: %v", err)
+	}
+
+	wantLabels := map[string]string{
+		"kwota.meta.com/quota-allocation": "my-qa",
+		"kwota.meta.com/workload-variant": "gb200",
+		constants.GroupNameLabelKey:       rbg.Name,
+		constants.RoleNameLabelKey:        roleName,
+	}
+	if len(updated.Labels) != len(wantLabels) {
+		t.Errorf("expected %d labels, got %d: %v", len(wantLabels), len(updated.Labels), updated.Labels)
+	}
+	for k, want := range wantLabels {
+		if got := updated.Labels[k]; got != want {
+			t.Errorf("label %q: expected %q, got %q", k, want, got)
+		}
+	}
+
+	// Reconcile again with same labels — should be a no-op (no update).
+	err = r.ReconcileScalingAdapter(context.Background(), rbg, roleSpec)
+	if err != nil {
+		t.Fatalf("second ReconcileScalingAdapter() unexpected error: %v", err)
+	}
+}
+
 func TestRoleBasedGroupReconciler_CleanupOrphanedScalingAdapters(t *testing.T) {
 	testScheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(testScheme)
-	_ = workloadsv1alpha1.AddToScheme(testScheme)
+	_ = workloadsv1alpha2.AddToScheme(testScheme)
 
-	rbg := wrappers.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 
 	tests := []struct {
 		name        string
@@ -518,17 +1034,17 @@ func TestRoleBasedGroupReconciler_CleanupOrphanedScalingAdapters(t *testing.T) {
 			name: "Delete orphaned scaling adapter",
 			obj: []client.Object{
 				rbg,
-				&workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+				&workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-rbg-scaling-role2-scaling-adapter",
 						Namespace: "default",
 						Labels: map[string]string{
-							workloadsv1alpha1.SetRoleLabelKey: "role2",
-							workloadsv1alpha1.SetNameLabelKey: "test-rbg",
+							constants.RoleNameLabelKey:  "role2",
+							constants.GroupNameLabelKey: "test-rbg",
 						},
 						OwnerReferences: []metav1.OwnerReference{
 							{
-								APIVersion: "workloads.x-k8s.io/v1alpha1",
+								APIVersion: "workloads.x-k8s.io/v1alpha2",
 								Kind:       "RoleBasedGroup",
 								Name:       "test-rbg",
 								Controller: ptr.To[bool](true),
@@ -536,8 +1052,8 @@ func TestRoleBasedGroupReconciler_CleanupOrphanedScalingAdapters(t *testing.T) {
 							},
 						},
 					},
-					Spec: workloadsv1alpha1.RoleBasedGroupScalingAdapterSpec{
-						ScaleTargetRef: &workloadsv1alpha1.AdapterScaleTargetRef{
+					Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+						ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
 							Name: "test-rbg",
 							Role: "role2", // This role doesn't exist in RBG spec
 						},
@@ -550,17 +1066,17 @@ func TestRoleBasedGroupReconciler_CleanupOrphanedScalingAdapters(t *testing.T) {
 			name: "Keep valid scaling adapter",
 			obj: []client.Object{
 				rbg,
-				&workloadsv1alpha1.RoleBasedGroupScalingAdapter{
+				&workloadsv1alpha2.RoleBasedGroupScalingAdapter{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-rbg-test-role-scaling-adapter",
 						Namespace: "default",
 						Labels: map[string]string{
-							workloadsv1alpha1.SetNameLabelKey: "test-rbg",
-							workloadsv1alpha1.SetRoleLabelKey: "test-role",
+							constants.GroupNameLabelKey: "test-rbg",
+							constants.RoleNameLabelKey:  "test-role",
 						},
 						OwnerReferences: []metav1.OwnerReference{
 							{
-								APIVersion: "workloads.x-k8s.io/v1alpha1",
+								APIVersion: "workloads.x-k8s.io/v1alpha2",
 								Kind:       "RoleBasedGroup",
 								Name:       "test-rbg",
 								Controller: ptr.To[bool](true),
@@ -568,8 +1084,8 @@ func TestRoleBasedGroupReconciler_CleanupOrphanedScalingAdapters(t *testing.T) {
 							},
 						},
 					},
-					Spec: workloadsv1alpha1.RoleBasedGroupScalingAdapterSpec{
-						ScaleTargetRef: &workloadsv1alpha1.AdapterScaleTargetRef{
+					Spec: workloadsv1alpha2.RoleBasedGroupScalingAdapterSpec{
+						ScaleTargetRef: &workloadsv1alpha2.AdapterScaleTargetRef{
 							Name: "test-rbg",
 							Role: "test-role", // This role exists in RBG spec
 						},
@@ -589,9 +1105,10 @@ func TestRoleBasedGroupReconciler_CleanupOrphanedScalingAdapters(t *testing.T) {
 					Build()
 
 				r := &RoleBasedGroupReconciler{
-					client:    fakeClient,
-					apiReader: fakeClient,
-					scheme:    testScheme,
+					client:             fakeClient,
+					apiReader:          fakeClient,
+					scheme:             testScheme,
+					workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
 				}
 
 				err := r.CleanupOrphanedScalingAdapters(context.Background(), rbg)
@@ -600,7 +1117,7 @@ func TestRoleBasedGroupReconciler_CleanupOrphanedScalingAdapters(t *testing.T) {
 				}
 
 				// Check if adapter still exists
-				adapters := &workloadsv1alpha1.RoleBasedGroupScalingAdapterList{}
+				adapters := &workloadsv1alpha2.RoleBasedGroupScalingAdapterList{}
 				listErr := fakeClient.List(
 					context.Background(), adapters, &client.ListOptions{
 						Namespace: "default",
@@ -627,5 +1144,740 @@ func TestRoleBasedGroupReconciler_CleanupOrphanedScalingAdapters(t *testing.T) {
 				}
 			},
 		)
+	}
+}
+
+func Test_getFastestAndSlowestRole(t *testing.T) {
+	tests := []struct {
+		name              string
+		coordinationRoles sets.Set[string]
+		desiredReplicas   map[string]int32
+		updatedReplicas   map[string]int32
+		expectedFastest   string
+		expectedSlowest   string
+	}{
+		{
+			name:              "two roles with different ratios",
+			coordinationRoles: sets.New[string]("role1", "role2"),
+			desiredReplicas: map[string]int32{
+				"role1": 100,
+				"role2": 100,
+			},
+			updatedReplicas: map[string]int32{
+				"role1": 50, // 50%
+				"role2": 10, // 10%
+			},
+			expectedFastest: "role1",
+			expectedSlowest: "role2",
+		},
+		{
+			name:              "two roles with same ratio, different desired",
+			coordinationRoles: sets.New[string]("role1", "role2"),
+			desiredReplicas: map[string]int32{
+				"role1": 200,
+				"role2": 100,
+			},
+			updatedReplicas: map[string]int32{
+				"role1": 100, // 50%
+				"role2": 50,  // 50%
+			},
+			expectedFastest: "role2", // Same ratio, but role1 has more desired replicas
+			expectedSlowest: "role1",
+		},
+		{
+			name:              "three roles with different ratios",
+			coordinationRoles: sets.New[string]("role1", "role2", "role3"),
+			desiredReplicas: map[string]int32{
+				"role1": 100,
+				"role2": 100,
+				"role3": 100,
+			},
+			updatedReplicas: map[string]int32{
+				"role1": 80, // 80%
+				"role2": 50, // 50%
+				"role3": 20, // 20%
+			},
+			expectedFastest: "role1",
+			expectedSlowest: "role3",
+		},
+		{
+			name:              "small replicas with different ratios",
+			coordinationRoles: sets.New[string]("role1", "role2"),
+			desiredReplicas: map[string]int32{
+				"role1": 10,
+				"role2": 10,
+			},
+			updatedReplicas: map[string]int32{
+				"role1": 7, // 70%
+				"role2": 3, // 30%
+			},
+			expectedFastest: "role1",
+			expectedSlowest: "role2",
+		},
+		{
+			name:              "unequal desired replicas",
+			coordinationRoles: sets.New[string]("role1", "role2"),
+			desiredReplicas: map[string]int32{
+				"role1": 200,
+				"role2": 100,
+			},
+			updatedReplicas: map[string]int32{
+				"role1": 20, // 10%
+				"role2": 15, // 15%
+			},
+			expectedFastest: "role2",
+			expectedSlowest: "role1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fastest, slowest := getFastestAndSlowestRole(tt.coordinationRoles, tt.desiredReplicas, tt.updatedReplicas)
+			if fastest != tt.expectedFastest {
+				t.Errorf("getFastestAndSlowestRole() fastest = %v, want %v", fastest, tt.expectedFastest)
+			}
+			if slowest != tt.expectedSlowest {
+				t.Errorf("getFastestAndSlowestRole() slowest = %v, want %v", slowest, tt.expectedSlowest)
+			}
+		},
+		)
+	}
+}
+
+func Test_getFastestAndSlowestRole_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name              string
+		coordinationRoles sets.Set[string]
+		desiredReplicas   map[string]int32
+		updatedReplicas   map[string]int32
+		expectedFastest   string
+		expectedSlowest   string
+	}{
+		{
+			name:              "single role",
+			coordinationRoles: sets.New[string]("role1"),
+			desiredReplicas: map[string]int32{
+				"role1": 100,
+			},
+			updatedReplicas: map[string]int32{
+				"role1": 50,
+			},
+			expectedFastest: "", // Should return empty for single role
+			expectedSlowest: "",
+		},
+		{
+			name:              "empty roles",
+			coordinationRoles: sets.New[string](),
+			desiredReplicas:   map[string]int32{},
+			updatedReplicas:   map[string]int32{},
+			expectedFastest:   "",
+			expectedSlowest:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				fastest, slowest := getFastestAndSlowestRole(tt.coordinationRoles, tt.desiredReplicas, tt.updatedReplicas)
+				if fastest != tt.expectedFastest {
+					t.Errorf("getFastestAndSlowestRole() fastest = %v, want %v", fastest, tt.expectedFastest)
+				}
+				if slowest != tt.expectedSlowest {
+					t.Errorf("getFastestAndSlowestRole() slowest = %v, want %v", slowest, tt.expectedSlowest)
+				}
+			},
+		)
+	}
+}
+
+func Test_mergeStrategyRollingUpdate(t *testing.T) {
+	tests := []struct {
+		name        string
+		strategiesA map[string]workloadsv1alpha2.RollingUpdate
+		strategiesB map[string]workloadsv1alpha2.RollingUpdate
+		expected    map[string]workloadsv1alpha2.RollingUpdate
+	}{
+		{
+			name:        "merge empty maps",
+			strategiesA: map[string]workloadsv1alpha2.RollingUpdate{},
+			strategiesB: map[string]workloadsv1alpha2.RollingUpdate{},
+			expected:    map[string]workloadsv1alpha2.RollingUpdate{},
+		},
+		{
+			name: "merge with no overlap",
+			strategiesA: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      ptr.To(intstr.FromInt32(10)),
+				},
+			},
+			strategiesB: map[string]workloadsv1alpha2.RollingUpdate{
+				"role2": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
+					Partition:      ptr.To(intstr.FromInt32(5)),
+				},
+			},
+			expected: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      ptr.To(intstr.FromInt32(10)),
+				},
+				"role2": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
+					Partition:      ptr.To(intstr.FromInt32(5)),
+				},
+			},
+		},
+		{
+			name: "merge with overlap, B has smaller maxUnavailable",
+			strategiesA: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(10)),
+					Partition:      ptr.To(intstr.FromInt32(5)),
+				},
+			},
+			strategiesB: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      ptr.To(intstr.FromInt32(3)),
+				},
+			},
+			expected: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)), // Smaller value
+					Partition:      ptr.To(intstr.FromInt32(5)), // Larger partition
+				},
+			},
+		},
+		{
+			name: "merge with overlap, B has larger partition",
+			strategiesA: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      ptr.To(intstr.FromInt32(3)),
+				},
+			},
+			strategiesB: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      ptr.To(intstr.FromInt32(10)),
+				},
+			},
+			expected: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      ptr.To(intstr.FromInt32(10)), // Larger partition
+				},
+			},
+		},
+		{
+			name: "merge with percentage maxUnavailable",
+			strategiesA: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromString("20%")),
+					Partition:      ptr.To(intstr.FromInt32(5)),
+				},
+			},
+			strategiesB: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromString("10%")),
+					Partition:      ptr.To(intstr.FromInt32(3)),
+				},
+			},
+			expected: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromString("10%")), // Smaller value
+					Partition:      ptr.To(intstr.FromInt32(5)),      // Larger partition
+				},
+			},
+		},
+		{
+			name: "merge with nil partition",
+			strategiesA: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      nil,
+				},
+			},
+			strategiesB: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
+					Partition:      ptr.To(intstr.FromInt32(10)),
+				},
+			},
+			expected: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
+					Partition:      ptr.To(intstr.FromInt32(10)), // B's partition
+				},
+			},
+		},
+		{
+			name: "merge multiple roles",
+			strategiesA: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(10)),
+					Partition:      ptr.To(intstr.FromInt32(5)),
+				},
+				"role2": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(5)),
+					Partition:      ptr.To(intstr.FromInt32(3)),
+				},
+			},
+			strategiesB: map[string]workloadsv1alpha2.RollingUpdate{
+				"role2": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
+					Partition:      ptr.To(intstr.FromInt32(10)),
+				},
+				"role3": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(7)),
+					Partition:      ptr.To(intstr.FromInt32(8)),
+				},
+			},
+			expected: map[string]workloadsv1alpha2.RollingUpdate{
+				"role1": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(10)),
+					Partition:      ptr.To(intstr.FromInt32(5)),
+				},
+				"role2": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(3)),
+					Partition:      ptr.To(intstr.FromInt32(10)),
+				},
+				"role3": {
+					MaxUnavailable: ptr.To(intstr.FromInt32(7)),
+					Partition:      ptr.To(intstr.FromInt32(8)),
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				result := mergeStrategyRollingUpdate(tt.strategiesA, tt.strategiesB)
+				if len(result) != len(tt.expected) {
+					t.Errorf("mergeStrategyRollingUpdate() result length = %v, want %v", len(result), len(tt.expected))
+					return
+				}
+				for role, expectedStrategy := range tt.expected {
+					actualStrategy, ok := result[role]
+					if !ok {
+						t.Errorf("mergeStrategyRollingUpdate() missing role %v", role)
+						continue
+					}
+					if actualStrategy.MaxUnavailable.String() != expectedStrategy.MaxUnavailable.String() {
+						t.Errorf("mergeStrategyRollingUpdate() MaxUnavailable for %v = %v, want %v", role, actualStrategy.MaxUnavailable, expectedStrategy.MaxUnavailable)
+					}
+					if (actualStrategy.Partition == nil) != (expectedStrategy.Partition == nil) {
+						t.Errorf("mergeStrategyRollingUpdate() Partition nil for %v = %v, want %v", role, actualStrategy.Partition == nil, expectedStrategy.Partition == nil)
+						continue
+					}
+					if actualStrategy.Partition != nil && expectedStrategy.Partition != nil {
+						if *actualStrategy.Partition != *expectedStrategy.Partition {
+							t.Errorf("mergeStrategyRollingUpdate() Partition for %v = %v, want %v", role, *actualStrategy.Partition, *expectedStrategy.Partition)
+						}
+					}
+				}
+			},
+		)
+	}
+}
+
+func Test_calculateCoordinationUpdatedReplicasBound(t *testing.T) {
+	tests := []struct {
+		name           string
+		maxSkew        *intstr.IntOrString
+		refUpdated     int32
+		refDesired     int32
+		requestDesired int32
+		expectedLower  int32
+		expectedUpper  int32
+	}{
+		{
+			name:           "normal case with 10% maxSkew",
+			maxSkew:        ptrToIntStr(intstr.FromString("10%")),
+			refUpdated:     50,
+			refDesired:     100,
+			requestDesired: 100,
+			expectedLower:  40, // (100*50*100 - 10*100*100) / (100*100) = 40
+			expectedUpper:  60, // (10*100*100 + 100*50*100) / (100*100) = 60
+		},
+		{
+			name:           "normal case with 1% maxSkew",
+			maxSkew:        ptrToIntStr(intstr.FromString("1%")),
+			refUpdated:     20,
+			refDesired:     200,
+			requestDesired: 100,
+			expectedLower:  9,  // floor calculation
+			expectedUpper:  11, // ceil calculation
+		},
+		{
+			name:           "different desired replicas",
+			maxSkew:        ptrToIntStr(intstr.FromString("5%")),
+			refUpdated:     50,
+			refDesired:     100,
+			requestDesired: 200,
+			expectedLower:  90,  // (100*50*200 - 5*100*200) / (100*100) = 90
+			expectedUpper:  110, // (5*100*200 + 100*50*200) / (100*100) = 110
+		},
+		{
+			name:           "zero refDesired",
+			maxSkew:        ptrToIntStr(intstr.FromString("10%")),
+			refUpdated:     0,
+			refDesired:     0,
+			requestDesired: 100,
+			expectedLower:  0,
+			expectedUpper:  0,
+		},
+		{
+			name:           "small values",
+			maxSkew:        ptrToIntStr(intstr.FromString("10%")),
+			refUpdated:     1,
+			refDesired:     10,
+			requestDesired: 10,
+			expectedLower:  0, // floor calculation
+			expectedUpper:  2, // ceil calculation
+		},
+		{
+			name:           "large maxSkew",
+			maxSkew:        ptrToIntStr(intstr.FromString("50%")),
+			refUpdated:     50,
+			refDesired:     100,
+			requestDesired: 100,
+			expectedLower:  0,   // (100*50*100 - 50*100*100) / (100*100) = 0
+			expectedUpper:  100, // (50*100*100 + 100*50*100) / (100*100) = 100
+		},
+		{
+			name:           "refUpdated equals refDesired",
+			maxSkew:        ptrToIntStr(intstr.FromString("10%")),
+			refUpdated:     100,
+			refDesired:     100,
+			requestDesired: 100,
+			expectedLower:  90,  // (100*100*100 - 10*100*100) / (100*100) = 90
+			expectedUpper:  110, // (10*100*100 + 100*100*100) / (100*100) = 110
+		},
+		{
+			name:           "zero refUpdated",
+			maxSkew:        ptrToIntStr(intstr.FromString("10%")),
+			refUpdated:     0,
+			refDesired:     100,
+			requestDesired: 100,
+			expectedLower:  0,  // (100*0*100 - 10*100*100) / (100*100) = -10, max with 0 = 0
+			expectedUpper:  10, // (10*100*100 + 100*0*100) / (100*100) = 10
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(
+			tt.name, func(t *testing.T) {
+				lower, upper := calculateCoordinationUpdatedReplicasBound(*tt.maxSkew, tt.refUpdated, tt.refDesired, tt.requestDesired)
+				if lower != tt.expectedLower {
+					t.Errorf("calculateCoordinationUpdatedReplicasBound() lower = %v, want %v", lower, tt.expectedLower)
+				}
+				if upper != tt.expectedUpper {
+					t.Errorf("calculateCoordinationUpdatedReplicasBound() upper = %v, want %v", upper, tt.expectedUpper)
+				}
+			},
+		)
+	}
+}
+
+// Helper function to create intstr.IntOrString pointer
+func ptrToIntStr(v intstr.IntOrString) *intstr.IntOrString {
+	return &v
+}
+
+// TestCalculateScalingForAllCoordination_MultipleCoordinations tests multiple coordination scaling scenarios
+func TestCalculateScalingForAllCoordination_MultipleCoordinations(t *testing.T) {
+	tests := []struct {
+		name         string
+		policyRules  []workloadsv1alpha2.CoordinatedPolicyRule
+		roles        []workloadsv1alpha2.RoleSpec
+		roleStatuses []workloadsv1alpha2.RoleStatus
+		pods         []*corev1.Pod
+		wantTargets  map[string]int32
+		wantErr      bool
+	}{
+		{
+			name: "two coordinations - no overlapping roles",
+			policyRules: []workloadsv1alpha2.CoordinatedPolicyRule{
+				{
+					Roles: []string{"prefill", "decode"},
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+							MaxSkew: ptrToIntStr(intstr.FromString("5%")),
+						},
+					},
+				},
+				{
+					Roles: []string{"router", "worker"},
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+							MaxSkew: ptrToIntStr(intstr.FromString("10%")),
+						},
+					},
+				},
+			},
+			roles: []workloadsv1alpha2.RoleSpec{
+				{Name: "prefill", Replicas: ptr.To(int32(300))},
+				{Name: "decode", Replicas: ptr.To(int32(100))},
+				{Name: "router", Replicas: ptr.To(int32(50))},
+				{Name: "worker", Replicas: ptr.To(int32(100))},
+			},
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
+				{Name: "prefill", Replicas: 0, ReadyReplicas: 0},
+				{Name: "decode", Replicas: 0, ReadyReplicas: 0},
+				{Name: "router", Replicas: 0, ReadyReplicas: 0},
+				{Name: "worker", Replicas: 0, ReadyReplicas: 0},
+			},
+			wantTargets: map[string]int32{
+				"prefill": 15, // 300 * 5% = 15
+				"decode":  5,  // 100 * 5% = 5
+				"router":  5,  // 50 * 10% = 5
+				"worker":  10, // 100 * 10% = 10
+			},
+			wantErr: false,
+		},
+		{
+			name: "two coordinations - with overlapping roles - take minimum",
+			policyRules: []workloadsv1alpha2.CoordinatedPolicyRule{
+				{
+					Roles: []string{"prefill", "decode"},
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+							MaxSkew: ptrToIntStr(intstr.FromString("5%")),
+						},
+					},
+				},
+				{
+					Roles: []string{"prefill", "worker"},
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+							MaxSkew: ptrToIntStr(intstr.FromString("10%")),
+						},
+					},
+				},
+			},
+			roles: []workloadsv1alpha2.RoleSpec{
+				{Name: "prefill", Replicas: ptr.To(int32(300))},
+				{Name: "decode", Replicas: ptr.To(int32(100))},
+				{Name: "worker", Replicas: ptr.To(int32(100))},
+			},
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
+				{Name: "prefill", Replicas: 0, ReadyReplicas: 0},
+				{Name: "decode", Replicas: 0, ReadyReplicas: 0},
+				{Name: "worker", Replicas: 0, ReadyReplicas: 0},
+			},
+			wantTargets: map[string]int32{
+				// coord1: prefill=15 (300*5%), decode=5 (100*5%)
+				// coord2: prefill=30 (300*10%), worker=10 (100*10%)
+				// prefill takes minimum: min(15, 30) = 15
+				"prefill": 15, // Take minimum from coord1 and coord2
+				"decode":  5,  // Only in coord1
+				"worker":  10, // Only in coord2
+			},
+			wantErr: false,
+		},
+		{
+			name: "three coordinations - complex overlapping",
+			policyRules: []workloadsv1alpha2.CoordinatedPolicyRule{
+				{
+					Roles: []string{"prefill", "decode"},
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+							MaxSkew: ptrToIntStr(intstr.FromString("5%")),
+						},
+					},
+				},
+				{
+					Roles: []string{"decode", "router"},
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+							MaxSkew: ptrToIntStr(intstr.FromString("8%")),
+						},
+					},
+				},
+				{
+					Roles: []string{"router", "worker"},
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+							MaxSkew: ptrToIntStr(intstr.FromString("10%")),
+						},
+					},
+				},
+			},
+			roles: []workloadsv1alpha2.RoleSpec{
+				{Name: "prefill", Replicas: ptr.To(int32(200))},
+				{Name: "decode", Replicas: ptr.To(int32(100))},
+				{Name: "router", Replicas: ptr.To(int32(50))},
+				{Name: "worker", Replicas: ptr.To(int32(100))},
+			},
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
+				{Name: "prefill", Replicas: 0, ReadyReplicas: 0},
+				{Name: "decode", Replicas: 0, ReadyReplicas: 0},
+				{Name: "router", Replicas: 0, ReadyReplicas: 0},
+				{Name: "worker", Replicas: 0, ReadyReplicas: 0},
+			},
+			wantTargets: map[string]int32{
+				// coord1: prefill=10 (200*5%), decode=5 (100*5%)
+				// coord2: decode=8 (100*8%), router=4 (50*8%)
+				// coord3: router=5 (50*10%), worker=10 (100*10%)
+				// decode: min(5, 8) = 5
+				// router: min(4, 5) = 4
+				"prefill": 10, // Only in coord1
+				"decode":  5,  // min(5 from coord1, 8 from coord2)
+				"router":  4,  // min(4 from coord2, 5 from coord3)
+				"worker":  10, // Only in coord3
+			},
+			wantErr: false,
+		},
+		{
+			name: "two coordinations - partial overlap with progression",
+			policyRules: []workloadsv1alpha2.CoordinatedPolicyRule{
+				{
+					Roles: []string{"prefill", "decode"},
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+							MaxSkew:     ptrToIntStr(intstr.FromString("5%")),
+							Progression: workloadsv1alpha2.OrderScheduledProgression,
+						},
+					},
+				},
+				{
+					Roles: []string{"decode", "router"},
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+						Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{
+							MaxSkew:     ptrToIntStr(intstr.FromString("10%")),
+							Progression: workloadsv1alpha2.OrderScheduledProgression,
+						},
+					},
+				},
+			},
+			roles: []workloadsv1alpha2.RoleSpec{
+				{Name: "prefill", Replicas: ptr.To(int32(100))},
+				{Name: "decode", Replicas: ptr.To(int32(100))},
+				{Name: "router", Replicas: ptr.To(int32(50))},
+			},
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
+				{Name: "prefill", Replicas: 5, ReadyReplicas: 5},
+				{Name: "decode", Replicas: 5, ReadyReplicas: 5},
+				{Name: "router", Replicas: 0, ReadyReplicas: 0},
+			},
+			pods: []*corev1.Pod{
+				// prefill pods - all scheduled
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-0", Labels: map[string]string{constants.RoleNameLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-1", Labels: map[string]string{constants.RoleNameLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-2", Labels: map[string]string{constants.RoleNameLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-3", Labels: map[string]string{constants.RoleNameLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "prefill-4", Labels: map[string]string{constants.RoleNameLabelKey: "prefill"}}, Spec: corev1.PodSpec{NodeName: "node1"}},
+				// decode pods - all scheduled
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-0", Labels: map[string]string{constants.RoleNameLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-1", Labels: map[string]string{constants.RoleNameLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-2", Labels: map[string]string{constants.RoleNameLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-3", Labels: map[string]string{constants.RoleNameLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+				{ObjectMeta: metav1.ObjectMeta{Name: "decode-4", Labels: map[string]string{constants.RoleNameLabelKey: "decode"}}, Spec: corev1.PodSpec{NodeName: "node2"}},
+			},
+			wantTargets: map[string]int32{
+				// All pods scheduled, can proceed to next batch
+				// coord1: prefill=10 (100*10%), decode=10 (100*10%)
+				// coord2: decode=15 (100*15%), router=5 (50*10%)
+				"prefill": 10, // Only in coord1
+				"decode":  10, // min(10 from coord1, 15 from coord2)
+				"router":  5,  // Only in coord2
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+
+			// Setup scheme
+			scheme := runtime.NewScheme()
+			_ = clientgoscheme.AddToScheme(scheme)
+			_ = workloadsv1alpha2.AddToScheme(scheme)
+
+			// Build RBG
+			rbg := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-rbg",
+					Namespace: "default",
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: tt.roles,
+				},
+				Status: workloadsv1alpha2.RoleBasedGroupStatus{
+					RoleStatuses: tt.roleStatuses,
+				},
+			}
+
+			// Build CoordinatedPolicy
+			policy := &workloadsv1alpha2.CoordinatedPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-rbg",
+					Namespace: "default",
+				},
+				Spec: workloadsv1alpha2.CoordinatedPolicySpec{
+					Policies: tt.policyRules,
+				},
+			}
+
+			// Setup fake client with pods
+			objects := []client.Object{rbg}
+			for _, pod := range tt.pods {
+				pod.Namespace = "default"
+				if pod.Labels == nil {
+					pod.Labels = make(map[string]string)
+				}
+				pod.Labels[constants.GroupNameLabelKey] = "test-rbg"
+				objects = append(objects, pod)
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objects...).
+				Build()
+
+			reconciler := &RoleBasedGroupReconciler{
+				client:             fakeClient,
+				scheme:             scheme,
+				recorder:           record.NewFakeRecorder(100),
+				workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
+			}
+
+			// Call the method
+			ctx := context.Background()
+			gotTargets, err := reconciler.CalculateScalingForAllCoordination(ctx, rbg, policy, tt.roleStatuses)
+
+			// Check error
+			if (err != nil) != tt.wantErr {
+				t.Errorf("CalculateScalingForAllCoordination() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if tt.wantErr {
+				return
+			}
+
+			// Check targets
+			for roleName, wantTarget := range tt.wantTargets {
+				gotTarget, exists := gotTargets[roleName]
+				if !exists {
+					t.Errorf("missing role %s in result", roleName)
+					continue
+				}
+				if gotTarget != wantTarget {
+					t.Errorf("role %s = %d, want %d", roleName, gotTarget, wantTarget)
+				}
+			}
+
+			// Check no extra roles
+			for roleName := range gotTargets {
+				if _, expected := tt.wantTargets[roleName]; !expected {
+					t.Errorf("unexpected role %s in result", roleName)
+				}
+			}
+		})
 	}
 }

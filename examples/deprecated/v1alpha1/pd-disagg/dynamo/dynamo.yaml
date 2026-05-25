@@ -1,0 +1,133 @@
+apiVersion: workloads.x-k8s.io/v1alpha1
+kind: RoleBasedGroup
+metadata:
+  name: dynamo-pd
+  namespace: default
+spec:
+  roles:
+    - name: processor
+      replicas: 1
+      template:
+        spec:
+          containers:
+            - command:
+                - sh
+                - -c
+                - python -m dynamo.frontend --http-port 8000
+              env:
+                - name: DYNAMO_PORT
+                  value: "8000"
+                - name: DYNAMO_NAME
+                  value: dynamo
+                - name: DYNAMO_NAMESPACE
+                  value: default
+                - name: ETCD_ENDPOINTS
+                  value: http://etcd:2379
+                - name: NATS_SERVER
+                  value: nats://nats:4222
+                - name: DYNAMO_RP_TIMEOUT
+                  value: "60"
+              image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:0.4.1
+              name: processor
+              ports:
+                - containerPort: 8000
+                  name: health
+                  protocol: TCP
+                - containerPort: 9345
+                  name: request
+                  protocol: TCP
+                - containerPort: 443
+                  name: api
+                  protocol: TCP
+                - containerPort: 9347
+                  name: metrics
+                  protocol: TCP
+              readinessProbe:
+                initialDelaySeconds: 30
+                periodSeconds: 30
+                tcpSocket:
+                  port: 8000
+    - name: prefill
+      replicas: 1
+      template:
+        spec:
+          containers:
+            - command:
+                - sh
+                - -c
+                - >-
+                  python3 -m dynamo.sglang --model Qwen/Qwen3-0.6B --served-model-name qwen3 --tp-size 1
+                  --skip-tokenizer-init --disaggregation-mode prefill --disaggregation-transfer-backend nixl
+              env:
+                - name: DYNAMO_PORT
+                  value: "8000"
+                - name: DYNAMO_NAME
+                  value: dynamo
+                - name: DYNAMO_NAMESPACE
+                  value: default
+                - name: ETCD_ENDPOINTS
+                  value: http://etcd:2379
+                - name: NATS_SERVER
+                  value: nats://nats:4222
+                - name: DYNAMO_RP_TIMEOUT
+                  value: "60"
+              image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:0.4.1
+              name: prefill-worker
+              resources:
+                limits:
+                  cpu: "12"
+                  memory: 48Gi
+                  nvidia.com/gpu: "1"
+                requests:
+                  cpu: "12"
+                  memory: 48Gi
+                  nvidia.com/gpu: "1"
+    - name: decoder
+      replicas: 1
+      template:
+        spec:
+          containers:
+            - command:
+                - sh
+                - -c
+                - >-
+                  python3 -m dynamo.sglang --model Qwen/Qwen3-0.6B --served-model-name qwen3
+                  --tp-size 1 --skip-tokenizer-init --disaggregation-mode decode --disaggregation-transfer-backend nixl
+              env:
+                - name: DYNAMO_PORT
+                  value: "8000"
+                - name: DYNAMO_NAME
+                  value: dynamo
+                - name: DYNAMO_NAMESPACE
+                  value: default
+                - name: ETCD_ENDPOINTS
+                  value: http://etcd:2379
+                - name: NATS_SERVER
+                  value: nats://nats:4222
+                - name: DYNAMO_RP_TIMEOUT
+                  value: "60"
+              image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:0.4.1
+              name: decode-worker
+              resources:
+                limits:
+                  cpu: "12"
+                  memory: 48Gi
+                  nvidia.com/gpu: "1"
+                requests:
+                  cpu: "12"
+                  memory: 48Gi
+                  nvidia.com/gpu: "1"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dynamo-service
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8000
+      protocol: TCP
+      targetPort: 8000
+  selector:
+    rolebasedgroup.workloads.x-k8s.io/name: dynamo-pd
+    rolebasedgroup.workloads.x-k8s.io/role: processor

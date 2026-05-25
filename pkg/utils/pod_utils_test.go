@@ -1,3 +1,19 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package utils
 
 import (
@@ -460,136 +476,6 @@ func Test_getPodConditionFromList(t *testing.T) {
 					} else if result.Type != tt.expectedResult.Type || result.Status != tt.expectedResult.Status {
 						t.Errorf("getPodConditionFromList() result = %v, want %v", result, tt.expectedResult)
 					}
-				}
-			},
-		)
-	}
-}
-
-func TestContainerRestarted(t *testing.T) {
-	tests := []struct {
-		name     string
-		pod      *corev1.Pod
-		expected bool
-	}{
-		{
-			name: "running pod with restarted init container",
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{
-					Phase: corev1.PodRunning,
-					InitContainerStatuses: []corev1.ContainerStatus{
-						{
-							Name:         "init-container",
-							RestartCount: 1,
-						},
-					},
-				},
-			},
-			expected: true,
-		},
-		{
-			name: "running pod with restarted regular container",
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{
-					Phase: corev1.PodRunning,
-					ContainerStatuses: []corev1.ContainerStatus{
-						{
-							Name:         "regular-container",
-							RestartCount: 1,
-						},
-					},
-				},
-			},
-			expected: true,
-		},
-		{
-			name: "running pod with patio-runtime restarted (should be ignored)",
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{
-					Phase: corev1.PodRunning,
-					ContainerStatuses: []corev1.ContainerStatus{
-						{
-							Name:         "patio-runtime",
-							RestartCount: 1,
-						},
-					},
-				},
-			},
-			expected: false,
-		},
-		{
-			name: "running pod with no restarts",
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{
-					Phase: corev1.PodRunning,
-					ContainerStatuses: []corev1.ContainerStatus{
-						{
-							Name:         "regular-container",
-							RestartCount: 0,
-						},
-					},
-				},
-			},
-			expected: false,
-		},
-		{
-			name: "pending pod with restarts",
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{
-					Phase: corev1.PodPending,
-					ContainerStatuses: []corev1.ContainerStatus{
-						{
-							Name:         "regular-container",
-							RestartCount: 1,
-						},
-					},
-				},
-			},
-			expected: true,
-		},
-		{
-			name: "succeeded pod with restarts",
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{
-					Phase: corev1.PodSucceeded,
-					ContainerStatuses: []corev1.ContainerStatus{
-						{
-							Name:         "regular-container",
-							RestartCount: 1,
-						},
-					},
-				},
-			},
-			expected: false,
-		},
-		{
-			name: "failed pod with restarts",
-			pod: &corev1.Pod{
-				Status: corev1.PodStatus{
-					Phase: corev1.PodFailed,
-					ContainerStatuses: []corev1.ContainerStatus{
-						{
-							Name:         "regular-container",
-							RestartCount: 1,
-						},
-					},
-				},
-			},
-			expected: false,
-		},
-		{
-			name:     "nil pod",
-			pod:      nil,
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(
-			tt.name, func(t *testing.T) {
-				result := ContainerRestarted(tt.pod)
-				if result != tt.expected {
-					t.Errorf("ContainerRestarted() = %v, want %v", result, tt.expected)
 				}
 			},
 		)
